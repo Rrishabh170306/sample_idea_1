@@ -4,6 +4,7 @@ import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from '
 import { EmptyState } from './EmptyState';
 import { SidebarNav } from './SidebarNav';
 import { TopBar } from './TopBar';
+import { ChatWorkspace } from '@/components/chat/ChatWorkspace';
 import { useWorkspaceStore } from '@/store/workspaceStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -55,7 +56,7 @@ export function WorkspaceShell() {
 
             <div className="flex flex-1 flex-col overflow-hidden p-4 lg:flex-row lg:p-6">
               <section className="flex-1 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
-                <EmptyState />
+                <ChatWorkspace />
               </section>
 
               {artifactPanelOpen ? (
