@@ -1,0 +1,302 @@
+# Architecture Deep-Dive Part 2: Agents, Eligibility & Document Intelligence
+
+## 1. LangGraph Agentic System
+
+### Orchestration Graph (Directed)
+```mermaid
+graph TD
+    A[User Input] --> B[Query Classifier]
+    B --> C{Route}
+    C -->|eligibility| D[Profile Agent]
+    C -->|comparison| E[Retrieval Agent]
+    C -->|application| E
+    C -->|document| F[Document Agent]
+    C -->|general| E
+    
+    D --> G[Eligibility Agent]
+    G --> H[Graph Agent]
+    
+    E --> I[Hybrid Retrieval]
+    I --> H
+    
+    F --> J[OCR + Extract]
+    J --> D
+    
+    H --> K[Verification Agent]
+    K --> L{Confidence > 0.8?}
+    L -->|yes| M[Citation Agent]
+    L -->|no| N[Human Review]
+    N --> M
+    M --> O[Response Agent]
+    O --> P[User Response]
+```
+
+### Shared Agent State
+```python
+from typing import TypedDict, Annotated, Sequence
+from langgraph.graph import MessagesState
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence, add_messages]
+    query: str
+    query_type: str  # eligibility|comparison|application|document|general
+    user_profile: dict
+    retrieved_chunks: list[dict]
+    graph_results: list[dict]
+    eligibility_results: dict
+    citations: list[dict]
+    confidence_score: float
+    needs_human_review: bool
+    response: str
+    session_id: str
+    turn_count: int
+```
+
+### Agent Specifications
+
+#### 1. Orchestrator Agent
+- **Role**: Entry point, routes to sub-graphs, manages state
+- **Inputs**: Raw user message, session_id
+- **Outputs**: Final response with citations
+- **Failure**: Falls back to generic response + human escalation
+- **Observability**: Traces via LangSmith, latency per node
+
+#### 2. Query Classifier Agent
+- **Role**: Classifies query intent using few-shot LLM classification
+- **Tools**: None (pure LLM node)
+- **Output**: `query_type` enum + `sub_intents[]`
+- **Classification taxonomy**:
+  - `eligibility` → "Am I eligible for...", "Which schemes can I get..."
+  - `comparison` → "Compare X vs Y", "Which is better..."
+  - `application` → "How to apply for...", "What documents needed..."
+  - `document` → "Check my uploaded documents", "Verify my certificate"
+  - `reasoning` → "Why am I not eligible...", "Explain the gap..."
+  - `general` → Everything else
+
+#### 3. User Profile Agent
+- **Role**: Maintains persistent user profile, detects missing fields
+- **Tools**: `profile_read`, `profile_update`, `profile_gap_check`
+- **State**: Reads/writes `user_profile` in state
+- **Memory Architecture**:
+  - **Session memory**: Current conversation (in LangGraph state)
+  - **Long-term memory**: PostgreSQL `user_profiles` table
+  - **Retrieval memory**: Past queries stored for personalization
+- **Key behavior**: Asks clarifying questions if profile incomplete for eligibility
+
+#### 4. Eligibility Agent
+- **Role**: Runs deterministic rule engine, NOT LLM reasoning
+- **Tools**: `evaluate_eligibility`, `gap_analysis`, `explain_eligibility`
+- **Critical design**: Uses JSONLogic rules, not LLM judgment
+- **Output**: Per-scheme { eligible: bool, score: float, gaps: [], explanation: str }
+
+#### 5. Retrieval Agent
+- **Role**: Orchestrates hybrid retrieval pipeline
+- **Tools**: `vector_search`, `bm25_search`, `graph_query`, `rerank`
+- **Strategy**: Multi-query expansion → parallel search → RRF → rerank
+
+#### 6. Graph Agent
+- **Role**: Neo4j Cypher queries for structured/relational lookups
+- **Tools**: `cypher_query`, `find_related_schemes`, `traverse_eligibility`
+- **When activated**: Multi-hop queries, scheme comparisons, category traversals
+
+#### 7. Document Agent
+- **Role**: Processes uploaded documents
+- **Tools**: `ocr_extract`, `classify_document`, `extract_entities`, `enrich_profile`
+- **Workflow**: Upload → Classify → OCR → Extract fields → Map to profile → Confirm
+
+#### 8. Verification Agent
+- **Role**: Multi-stage hallucination prevention
+- **Tools**: `verify_against_source`, `check_citation`, `validate_eligibility`
+- **Checks**: (1) Is answer supported by retrieved chunks? (2) Are citations valid? (3) Do eligibility claims match rule engine?
+- **Output**: `confidence_score` (0-1), `verified: bool`
+
+#### 9. Citation Agent
+- **Role**: Attaches source citations to every factual claim
+- **Tools**: `find_source`, `format_citation`
+- **Output**: `citations: [{ claim, source_url, source_text, confidence }]`
+
+#### 10. Response Agent
+- **Role**: Generates final user-facing response
+- **Tools**: `translate` (for multilingual), `format_response`
+- **Guardrails**: Must include citations, must not make uncited claims
+- **Multilingual**: Detects input language, responds in same language
+
+---
+
+## 2. Eligibility Engine (Deterministic)
+
+### Why Not Pure LLM?
+- LLMs hallucinate eligibility criteria
+- Rules change; LLM training data is stale
+- Government decisions need auditability — "the system said I'm eligible" must be traceable
+- Deterministic rules are testable, debuggable, version-controlled
+
+### JSONLogic Rule Format
+```json
+{
+  "scheme_id": "PM-KISAN-001",
+  "rules": {
+    "and": [
+      {"<=": [{"var": "age"}, 100]},
+      {">=": [{"var": "age"}, 18]},
+      {"==": [{"var": "land_ownership"}, true]},
+      {"<=": [{"var": "land_hectares"}, 2]},
+      {"!": {"in": [{"var": "occupation"}, ["government_employee"]]}},
+      {"!": {"in": [{"var": "income_tax_payer"}, [true]]}}
+    ]
+  }
+}
+```
+
+### Eligibility Evaluation
+```python
+import json_logic_py as jsonLogic
+
+class EligibilityEngine:
+    def evaluate(self, user_profile: dict, scheme_rules: dict) -> EligibilityResult:
+        is_eligible = jsonLogic.jsonLogic(scheme_rules["rules"], user_profile)
+        
+        # Gap analysis: evaluate each rule individually
+        gaps = []
+        for rule in scheme_rules["rules"].get("and", []):
+            if not jsonLogic.jsonLogic(rule, user_profile):
+                gaps.append(self._explain_gap(rule, user_profile))
+        
+        score = 1.0 - (len(gaps) / len(scheme_rules["rules"].get("and", [])))
+        
+        return EligibilityResult(
+            eligible=is_eligible,
+            score=score,
+            gaps=gaps,
+            explanation=self._generate_explanation(gaps, user_profile)
+        )
+    
+    def _explain_gap(self, rule: dict, profile: dict) -> str:
+        # Example: "Your income ₹3,50,000 exceeds the limit of ₹2,50,000 by ₹1,00,000"
+        ...
+```
+
+### Gap Analysis Example
+```json
+{
+  "scheme": "PM-KISAN",
+  "eligible": false,
+  "score": 0.83,
+  "gaps": [
+    {
+      "field": "land_hectares",
+      "user_value": 3.5,
+      "required": "≤ 2 hectares",
+      "gap": "Your land holding (3.5 ha) exceeds the limit by 1.5 ha"
+    }
+  ],
+  "recommendation": "You may qualify for Kisan Credit Card scheme which has no land limit"
+}
+```
+
+---
+
+## 3. User Profile System
+
+### Database Schema
+```sql
+CREATE TABLE user_profiles (
+    user_id UUID PRIMARY KEY,
+    age INT,
+    gender VARCHAR(10),
+    state VARCHAR(50),
+    district VARCHAR(100),
+    income DECIMAL,
+    occupation VARCHAR(100),
+    category VARCHAR(20),      -- SC/ST/OBC/General
+    education VARCHAR(50),
+    disability_status BOOLEAN DEFAULT FALSE,
+    disability_type VARCHAR(50),
+    land_ownership BOOLEAN DEFAULT FALSE,
+    land_hectares DECIMAL,
+    business_ownership BOOLEAN DEFAULT FALSE,
+    business_type VARCHAR(50),
+    marital_status VARCHAR(20),
+    dependents INT,
+    profile_completeness FLOAT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE user_documents (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES user_profiles(user_id),
+    document_type VARCHAR(50),
+    file_path VARCHAR(500),
+    extracted_data JSONB,
+    verified BOOLEAN DEFAULT FALSE,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE user_sessions (
+    session_id UUID PRIMARY KEY,
+    user_id UUID REFERENCES user_profiles(user_id),
+    messages JSONB,
+    context JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## 4. Document Intelligence
+
+### End-to-End Workflow
+```
+Upload → Virus Scan → Classify (Aadhaar/Income/Caste/etc.) → OCR → Extract Fields → Validate → Map to Profile → Store
+```
+
+### Document-to-Profile Mapping
+| Document | Extracted Fields | Profile Fields Updated |
+|----------|-----------------|----------------------|
+| Aadhaar | name, DOB, gender, address | age, gender, state, district |
+| Income Certificate | income, issuing authority | income |
+| Caste Certificate | category, sub-category | category |
+| Disability Certificate | disability type, percentage | disability_status, disability_type |
+| Land Records | area, type, location | land_ownership, land_hectares |
+
+---
+
+## 5. MCP Architecture
+
+### MCP Server Design
+```python
+# Scheme Retrieval MCP Server
+@mcp_server.tool()
+async def search_schemes(query: str, filters: dict) -> list[SchemeResult]:
+    """Hybrid search across scheme database with metadata filtering."""
+    ...
+
+@mcp_server.tool()
+async def get_scheme_details(scheme_id: str) -> SchemeDetail:
+    """Get full scheme information by ID."""
+    ...
+
+# Eligibility MCP Server
+@mcp_server.tool()
+async def check_eligibility(user_profile: dict, scheme_id: str) -> EligibilityResult:
+    """Run deterministic eligibility check for a specific scheme."""
+    ...
+
+@mcp_server.tool()
+async def find_eligible_schemes(user_profile: dict) -> list[EligibilityResult]:
+    """Find all schemes a user is eligible for."""
+    ...
+
+# Document MCP Server
+@mcp_server.tool()
+async def process_document(file_path: str) -> DocumentResult:
+    """OCR + extract entities from uploaded document."""
+    ...
+```
+
+### Security Model
+- **Authentication**: API key per MCP client + JWT for user sessions
+- **Authorization**: RBAC — agents can only call tools they're registered for
+- **PII Protection**: Document data encrypted at rest (AES-256), PII masked in logs
+- **Audit trail**: Every tool call logged with `agent_id`, `tool_name`, `timestamp`, `input_hash`

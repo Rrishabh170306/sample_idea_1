@@ -1,0 +1,321 @@
+# Architecture Deep-Dive Part 3: Deployment, Security, Evaluation & Roadmap
+
+## 1. Deployment Topology
+
+### Docker Compose (Development/MVP)
+```yaml
+services:
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
+    depends_on: [postgres, neo4j, redis]
+    environment:
+      - DATABASE_URL=postgresql://user:pass@postgres:5432/govschemes
+      - NEO4J_URI=bolt://neo4j:7687
+      - REDIS_URL=redis://redis:6379
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  neo4j:
+    image: neo4j:5-community
+    ports: ["7474:7474", "7687:7687"]
+    volumes: [neo4jdata:/data]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  scraper:
+    build: ./backend
+    command: scrapy crawl myscheme
+    depends_on: [postgres, redis]
+```
+
+### Kubernetes (Production)
+```
+                    ┌─────────────┐
+                    │  Ingress    │
+                    │  (Nginx)    │
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────▼─────┐ ┌───▼────┐ ┌────▼─────┐
+        │ API Pods   │ │ Worker │ │ Scraper  │
+        │ (3-10)     │ │ Pods   │ │ CronJob  │
+        │ FastAPI    │ │(Agent) │ │ (Scrapy) │
+        └─────┬──────┘ └───┬────┘ └────┬─────┘
+              │            │            │
+    ┌─────────┼────────────┼────────────┼──────────┐
+    │         │            │            │          │
+┌───▼──┐ ┌───▼──┐  ┌──────▼──┐  ┌─────▼──┐ ┌────▼───┐
+│Postgres│ │Redis │  │  Neo4j  │  │ Blob   │ │ Kafka  │
+│pgVector│ │Cluster│  │ Cluster │  │Storage │ │(V2)    │
+└────────┘ └──────┘  └─────────┘  └────────┘ └────────┘
+```
+
+### Scaling Strategy
+| Component | MVP | V2 (100K users) | V3 (1M+ users) |
+|-----------|-----|-----------------|-----------------|
+| API | 2 pods | 5 pods + HPA | 10+ pods, regional |
+| PostgreSQL | Single | Primary + 2 read replicas | Citus sharding |
+| Neo4j | Community single | Enterprise cluster | Aura managed |
+| Redis | Single | Sentinel (3 nodes) | Redis Cluster |
+| Worker | 2 pods | 5 pods | Autoscaled |
+
+### Cost Estimates (Monthly)
+| Component | MVP (AWS) | V2 | V3 |
+|-----------|-----------|-----|-----|
+| Compute (EKS) | $200 | $800 | $3,000 |
+| PostgreSQL (RDS) | $50 | $200 | $800 |
+| Neo4j | $0 (community) | $300 | $1,000 |
+| Redis (ElastiCache) | $30 | $100 | $400 |
+| LLM API (Gemini) | $100 | $500 | $2,000 |
+| Storage (S3) | $10 | $50 | $200 |
+| **Total** | **~$400** | **~$2,000** | **~$7,500** |
+
+---
+
+## 2. Middleware & Security
+
+### Middleware Stack
+```python
+# FastAPI middleware chain
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+app.add_middleware(RateLimitMiddleware, rate="100/minute")
+app.add_middleware(AuditLogMiddleware)  # logs every request
+app.add_middleware(PIIRedactionMiddleware)  # strips PII from logs
+app.add_middleware(PromptInjectionGuard)  # blocks prompt attacks
+```
+
+### PII Protection
+- User documents encrypted at rest (AES-256-GCM)
+- PII fields (Aadhaar, income) never logged in plaintext
+- Document uploads stored in isolated blob storage with pre-signed URLs
+- Session data purged after 30 days (configurable)
+
+### Prompt Security
+- Input sanitization: strip injection patterns (`ignore previous instructions`, etc.)
+- Output guardrails: response must cite sources, cannot make legal guarantees
+- System prompt locked: no user override of agent instructions
+
+---
+
+## 3. Hallucination Prevention
+
+### Multi-Stage Verification Pipeline
+```
+LLM Response → Stage 1: Retrieval Grounding → Stage 2: Citation Check → Stage 3: Rule Verification → Stage 4: Confidence Score → Pass/Fail
+```
+
+| Stage | Check | Action on Fail |
+|-------|-------|---------------|
+| Retrieval Grounding | Is every claim in the response supported by a retrieved chunk? | Flag unsupported claims, add disclaimers |
+| Citation Check | Does each cited source exist and contain the claimed info? | Remove invalid citations |
+| Rule Verification | Do eligibility claims match JSONLogic rule engine output? | Override with rule engine result |
+| Confidence Score | Overall confidence > 0.8? | Route to human review queue |
+
+### Confidence Scoring
+```python
+def compute_confidence(state: AgentState) -> float:
+    scores = {
+        "retrieval_relevance": avg([c.score for c in state.retrieved_chunks]),
+        "citation_coverage": len(state.citations) / max(claim_count, 1),
+        "rule_agreement": 1.0 if eligibility_matches else 0.5,
+        "source_freshness": 1.0 if all_sources_fresh else 0.7
+    }
+    weights = {"retrieval_relevance": 0.3, "citation_coverage": 0.3,
+               "rule_agreement": 0.25, "source_freshness": 0.15}
+    return sum(scores[k] * weights[k] for k in scores)
+```
+
+---
+
+## 4. Human-in-the-Loop
+
+### Escalation Triggers
+1. **Low confidence** (< 0.8) → human review queue
+2. **Conflicting sources** → flag for expert review
+3. **Missing eligibility data** → ask user for more info first, then escalate
+4. **Policy update detected** → freeze affected scheme responses, alert content team
+5. **User dispute** → "I think I am eligible" → route to manual review
+
+### Review Queue
+```sql
+CREATE TABLE review_queue (
+    id UUID PRIMARY KEY,
+    session_id UUID,
+    query TEXT,
+    response TEXT,
+    confidence FLOAT,
+    reason VARCHAR(50),  -- low_confidence, conflicting, dispute
+    status VARCHAR(20) DEFAULT 'pending',  -- pending, reviewed, resolved
+    reviewer_id UUID,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## 5. Evaluation Framework
+
+### Retrieval Metrics (Automated, run weekly)
+```python
+# Using RAGAS framework
+from ragas.metrics import context_recall, context_precision, faithfulness
+
+eval_dataset = load_golden_dataset()  # 200+ manually curated QA pairs
+results = evaluate(
+    dataset=eval_dataset,
+    metrics=[context_recall, context_precision, faithfulness,
+             answer_relevancy, hallucination],
+    llm=eval_llm
+)
+```
+
+### Business Metrics (Dashboard)
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Eligibility accuracy | > 95% | Manual audit of 100 random checks/week |
+| Missed scheme rate | < 5% | Compare agent recs vs exhaustive rule scan |
+| False recommendation rate | < 2% | Verify rec'd schemes against user profile |
+| Response faithfulness | > 0.9 | RAGAS faithfulness score |
+| Citation accuracy | > 95% | Automated source verification |
+| Avg response time | < 5s | P95 latency monitoring |
+
+---
+
+## 6. Phased Roadmap
+
+### MVP (8-10 weeks) — Essential Components
+- [x] FastAPI backend + PostgreSQL + pgVector
+- [x] MyScheme.gov.in scraper (100-200 central schemes)
+- [x] Basic RAG pipeline (vector search + BM25)
+- [x] 5 core agents: Orchestrator, Classifier, Retrieval, Eligibility, Response
+- [x] JSONLogic eligibility engine (top 50 schemes)
+- [x] Simple chat UI
+- [x] Docker Compose deployment
+- [ ] ~~Neo4j/GraphRAG~~ (defer)
+- [ ] ~~MCP servers~~ (defer)
+- [ ] ~~Document Intelligence~~ (defer)
+
+### V2 (12-16 weeks) — Production Features
+- [ ] Neo4j knowledge graph + GraphRAG hybrid retrieval
+- [ ] Document upload + OCR pipeline
+- [ ] All 15 agents with full LangGraph orchestration
+- [ ] State scheme scrapers (top 10 states)
+- [ ] Multilingual support (Hindi + 5 regional)
+- [ ] Human review queue + admin dashboard
+- [ ] MCP server architecture
+- [ ] Kubernetes deployment
+- [ ] RAGAS evaluation pipeline
+
+### V3 (20-24 weeks) — Scale & Intelligence
+- [ ] 4000+ schemes coverage (all states)
+- [ ] Advanced document verification
+- [ ] Conversational memory + personalization
+- [ ] Kafka event streaming
+- [ ] Regional language OCR
+- [ ] Mobile-optimized frontend
+- [ ] Analytics dashboard
+- [ ] Federated deployment (state-level instances)
+
+---
+
+## 7. Risks & Mitigations
+
+| Risk | Impact | Probability | Mitigation |
+|------|--------|------------|-----------|
+| Government sites block scraper | No data | Medium | Respectful crawling, fallback to manual data entry, use official APIs where available |
+| LLM hallucination on eligibility | User harm | High | Deterministic rule engine, multi-stage verification, never rely on LLM alone for eligibility |
+| Scheme data becomes stale | Incorrect recommendations | High | Daily freshness checks, version tracking, staleness warnings |
+| PII data breach | Legal/compliance | Medium | Encryption at rest, minimal PII storage, audit logging, data purge policies |
+| Scale exceeds budget | Service degradation | Medium | Start with Gemini Flash (cheap), cache aggressively, async processing |
+| Neo4j complexity | Delays | Medium | Defer to V2, MVP uses metadata filtering on pgVector instead |
+
+---
+
+## 8. Architecture Diagrams
+
+### Complete System Architecture
+```mermaid
+graph TB
+    subgraph "User Layer"
+        UI[Chat UI / Web App]
+        API[FastAPI Gateway]
+    end
+
+    subgraph "Agent Layer (LangGraph)"
+        ORC[Orchestrator]
+        CLS[Classifier]
+        PRF[Profile Agent]
+        ELG[Eligibility Agent]
+        RET[Retrieval Agent]
+        GRP[Graph Agent]
+        DOC[Document Agent]
+        VER[Verification Agent]
+        CIT[Citation Agent]
+        RSP[Response Agent]
+    end
+
+    subgraph "Engine Layer"
+        RAG[RAG Pipeline]
+        RUL[Rule Engine]
+        OCR[OCR Pipeline]
+    end
+
+    subgraph "Data Layer"
+        PG[(PostgreSQL + pgVector)]
+        N4[(Neo4j)]
+        RD[(Redis)]
+        S3[(Blob Storage)]
+    end
+
+    subgraph "Ingestion Layer"
+        SCR[Scrapy Spiders]
+        EXT[Knowledge Extractor]
+        EMB[Embedding Pipeline]
+    end
+
+    UI --> API --> ORC
+    ORC --> CLS --> PRF --> ELG
+    ORC --> RET --> RAG
+    ORC --> GRP
+    ORC --> DOC --> OCR
+    ELG --> RUL
+    VER --> CIT --> RSP
+    RAG --> PG
+    GRP --> N4
+    PRF --> PG
+    RUL --> PG
+    ORC --> RD
+    DOC --> S3
+    SCR --> EXT --> EMB --> PG
+    EXT --> N4
+```
+
+### Query Flow Sequence
+```mermaid
+sequenceDiagram
+    User->>API: "Am I eligible for PM-KISAN?"
+    API->>Orchestrator: route(query, session)
+    Orchestrator->>Classifier: classify(query)
+    Classifier-->>Orchestrator: type=eligibility
+    Orchestrator->>ProfileAgent: get_profile(user_id)
+    ProfileAgent-->>Orchestrator: profile{age:35, state:UP, farmer:true}
+    Orchestrator->>EligibilityAgent: check(profile, "PM-KISAN")
+    EligibilityAgent->>RuleEngine: evaluate(rules, profile)
+    RuleEngine-->>EligibilityAgent: {eligible:true, score:1.0}
+    Orchestrator->>RetrievalAgent: get_details("PM-KISAN")
+    RetrievalAgent-->>Orchestrator: chunks[benefits, process, docs]
+    Orchestrator->>VerificationAgent: verify(response, chunks)
+    VerificationAgent-->>Orchestrator: {confidence:0.95}
+    Orchestrator->>CitationAgent: cite(response, sources)
+    Orchestrator->>ResponseAgent: generate(all_context)
+    ResponseAgent-->>API: formatted response + citations
+    API-->>User: "Yes, you are eligible for PM-KISAN..."
+```

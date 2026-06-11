@@ -1,0 +1,154 @@
+# AI Government Scheme Navigator - Implementation Plan
+
+## Overview
+Production-grade Agentic RAG platform for navigating 4000-5000 Indian government schemes. Serves millions of users with eligibility recommendations, document processing, and multilingual conversational AI.
+
+## Project Structure
+```
+HACKATHON_MICROSOFT/
+├── gov-scheme-navigator/
+│   ├── backend/                # FastAPI + LangGraph
+│   │   ├── app/
+│   │   │   ├── agents/         # 15 LangGraph agents
+│   │   │   ├── api/            # FastAPI routes
+│   │   │   ├── core/           # Config, security, middleware
+│   │   │   ├── db/             # PostgreSQL + pgVector models
+│   │   │   ├── eligibility/    # Rule engine (JSONLogic)
+│   │   │   ├── graph/          # Neo4j knowledge graph
+│   │   │   ├── mcp/            # MCP servers
+│   │   │   ├── rag/            # Retrieval pipeline
+│   │   │   ├── scraping/       # Scrapy + Playwright
+│   │   │   ├── document_intel/ # OCR + doc processing
+│   │   │   └── tools/          # Agent tools
+│   │   ├── tests/
+│   │   ├── alembic/            # DB migrations
+│   │   └── pyproject.toml
+│   ├── frontend/               # React/Next.js chat UI
+│   ├── docker-compose.yml
+│   ├── k8s/                    # Kubernetes manifests
+│   └── docs/                   # Architecture docs
+```
+
+## Technology Decisions
+
+| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| API Framework | FastAPI | Async, OpenAPI, production-proven |
+| Agent Orchestration | LangGraph | State machines, checkpointing, human-in-loop |
+| Vector DB | PostgreSQL + pgVector | Single DB for relational + vector, HNSW indexing |
+| Knowledge Graph | Neo4j | Best graph DB, Cypher query language |
+| Cache | Redis | Session, profile, query caching |
+| Queue | Redis Streams (MVP) → Kafka (V2) | Start simple, scale later |
+| Embedding | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Multilingual, Indian language support |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Fast, accurate reranking |
+| LLM | Gemini 1.5 Pro (primary), GPT-4o (fallback) | Cost-effective, large context |
+| OCR | Tesseract + Azure Document Intelligence | Free tier + production accuracy |
+| Scraping | Scrapy + Playwright | Static + dynamic page support |
+| Rule Engine | `json-logic-py` | Deterministic eligibility, auditable |
+
+## Proposed Changes
+
+### 1. Backend Core Setup
+#### [NEW] `backend/app/core/config.py` - Central configuration
+#### [NEW] `backend/app/core/middleware.py` - Auth, rate limiting, audit logging
+#### [NEW] `backend/app/main.py` - FastAPI application entry point
+
+---
+
+### 2. Database Layer
+#### [NEW] `backend/app/db/models.py` - SQLAlchemy models for schemes, users, documents
+#### [NEW] `backend/app/db/vector_store.py` - pgVector operations, HNSW index management
+#### [NEW] `backend/alembic/` - Database migration scripts
+
+---
+
+### 3. Web Scraping Pipeline
+#### [NEW] `backend/app/scraping/spiders/myscheme_spider.py` - MyScheme.gov.in crawler
+#### [NEW] `backend/app/scraping/spiders/state_portal_spider.py` - State portals
+#### [NEW] `backend/app/scraping/middlewares.py` - Anti-bot handling, Playwright integration
+#### [NEW] `backend/app/scraping/pipelines.py` - Data cleaning, normalization, storage
+
+---
+
+### 4. Knowledge Extraction
+#### [NEW] `backend/app/scraping/extractors/scheme_extractor.py` - LLM-based structured extraction
+#### [NEW] `backend/app/scraping/extractors/schemas.py` - Pydantic schemas for scheme data
+
+---
+
+### 5. RAG Pipeline
+#### [NEW] `backend/app/rag/chunker.py` - Semantic + hierarchical chunking
+#### [NEW] `backend/app/rag/embedder.py` - Embedding generation + caching
+#### [NEW] `backend/app/rag/retriever.py` - Hybrid search (vector + BM25 + graph)
+#### [NEW] `backend/app/rag/reranker.py` - Cross-encoder reranking + RRF fusion
+
+---
+
+### 6. Knowledge Graph
+#### [NEW] `backend/app/graph/schema.py` - Neo4j node/relationship definitions
+#### [NEW] `backend/app/graph/ingestion.py` - Graph population from extracted data
+#### [NEW] `backend/app/graph/queries.py` - Cypher query templates
+
+---
+
+### 7. Eligibility Engine
+#### [NEW] `backend/app/eligibility/rules.py` - JSONLogic rule definitions
+#### [NEW] `backend/app/eligibility/engine.py` - Rule evaluation, scoring, gap analysis
+#### [NEW] `backend/app/eligibility/explanations.py` - Human-readable explanations
+
+---
+
+### 8. LangGraph Agents
+#### [NEW] `backend/app/agents/orchestrator.py` - Main orchestration graph
+#### [NEW] `backend/app/agents/planner.py` - Query decomposition
+#### [NEW] `backend/app/agents/classifier.py` - Query classification
+#### [NEW] `backend/app/agents/profile.py` - User profile management
+#### [NEW] `backend/app/agents/eligibility_agent.py` - Eligibility checking
+#### [NEW] `backend/app/agents/retrieval.py` - RAG retrieval agent
+#### [NEW] `backend/app/agents/graph_agent.py` - Knowledge graph queries
+#### [NEW] `backend/app/agents/document.py` - Document processing
+#### [NEW] `backend/app/agents/verification.py` - Hallucination prevention
+#### [NEW] `backend/app/agents/citation.py` - Source citation
+#### [NEW] `backend/app/agents/response.py` - Response generation
+#### [NEW] `backend/app/agents/state.py` - Shared agent state definition
+
+---
+
+### 9. MCP Servers
+#### [NEW] `backend/app/mcp/scheme_server.py` - Scheme retrieval MCP
+#### [NEW] `backend/app/mcp/eligibility_server.py` - Eligibility MCP
+#### [NEW] `backend/app/mcp/document_server.py` - Document processing MCP
+
+---
+
+### 10. Document Intelligence
+#### [NEW] `backend/app/document_intel/ocr.py` - OCR pipeline
+#### [NEW] `backend/app/document_intel/classifier.py` - Document type classification
+#### [NEW] `backend/app/document_intel/extractor.py` - Entity extraction from documents
+
+---
+
+### 11. API Layer
+#### [NEW] `backend/app/api/chat.py` - Chat endpoint with WebSocket
+#### [NEW] `backend/app/api/schemes.py` - Scheme CRUD endpoints
+#### [NEW] `backend/app/api/documents.py` - Document upload endpoints
+#### [NEW] `backend/app/api/profile.py` - User profile endpoints
+
+---
+
+### 12. Infrastructure
+#### [NEW] `docker-compose.yml` - PostgreSQL, Neo4j, Redis, backend
+#### [NEW] `k8s/` - Kubernetes deployment manifests
+
+## Verification Plan
+
+### Automated Tests
+- `pytest backend/tests/` - Unit tests for all components
+- `pytest backend/tests/test_eligibility.py` - Rule engine accuracy tests
+- `pytest backend/tests/test_retrieval.py` - RAG retrieval quality tests
+
+### Manual Verification
+- Run `docker-compose up` and verify all services start
+- Test chat endpoint with sample eligibility queries
+- Verify scheme data ingestion from MyScheme portal
+- Test document upload and OCR extraction

@@ -1,0 +1,227 @@
+# Architecture Deep-Dive Part 1: Data & Retrieval
+
+## 1. Web Scraping Architecture
+
+### Pipeline Design
+```
+Sitemap Discovery → URL Queue (Redis) → Spider Selection → Crawl → Extract → Normalize → Store → Index
+```
+
+### Spider Strategy
+| Source | Spider | Rendering | Schedule |
+|--------|--------|-----------|----------|
+| MyScheme.gov.in | `MySchemeSpider` | Playwright (SPA) | Daily |
+| State portals | `StatePortalSpider` | Scrapy (static) | Weekly |
+| Ministry PDFs | `PDFSpider` | Scrapy + download | Weekly |
+| Gazette notifications | `GazetteSpider` | Scrapy | Daily |
+
+### Anti-Bot Handling
+1. **Rotating User-Agents** via `scrapy-fake-useragent`
+2. **Request throttling**: 2-5 sec delay per domain, `AUTOTHROTTLE_ENABLED=True`
+3. **Playwright fallback**: When Scrapy gets blocked, escalate to headless browser
+4. **Proxy rotation**: For rate-limited portals (optional, government sites rarely block)
+5. **Respectful crawling**: Honor `robots.txt`, use `ROBOTSTXT_OBEY=True`
+
+### Change Detection & Freshness
+```python
+# Hash-based change detection
+class ChangeDetector:
+    def has_changed(self, url: str, content: str) -> bool:
+        new_hash = hashlib.sha256(content.encode()).hexdigest()
+        old_hash = redis.get(f"page_hash:{url}")
+        if new_hash != old_hash:
+            redis.set(f"page_hash:{url}", new_hash)
+            return True
+        return False
+```
+- Store `content_hash` + `last_crawled_at` per URL
+- Freshness monitor: daily job checks high-priority schemes
+- Version tracking: store previous versions in `scheme_versions` table
+
+### PDF & OCR Pipeline
+```
+PDF Upload → PyMuPDF (text extraction) → If scanned → Tesseract OCR → Text cleanup → Chunking
+```
+- **PyMuPDF**: Fast, handles 90% of government PDFs
+- **Tesseract**: Fallback for scanned docs, supports Hindi/regional languages
+- **Azure Document Intelligence**: Production upgrade for complex layouts (tables, forms)
+
+---
+
+## 2. Knowledge Extraction
+
+### Scheme JSON Schema
+```json
+{
+  "scheme_id": "PM-KISAN-001",
+  "name": "PM-KISAN Samman Nidhi",
+  "name_hindi": "पीएम-किसान सम्मान निधि",
+  "department": "Ministry of Agriculture",
+  "ministry": "Agriculture & Farmers Welfare",
+  "state": "Central",
+  "category": ["agriculture", "direct_benefit"],
+  "target_beneficiaries": ["farmers", "small_farmers"],
+  "eligibility": {
+    "age": {"min": 18, "max": null},
+    "income": {"max": null},
+    "land_ownership": {"required": true, "max_hectares": 2},
+    "occupation": ["farmer"],
+    "states": ["all"],
+    "exclusions": ["institutional_landholders", "income_tax_payers"]
+  },
+  "benefits": {
+    "type": "cash_transfer",
+    "amount": 6000,
+    "frequency": "annual",
+    "installments": 3,
+    "description": "₹6,000 per year in three installments"
+  },
+  "documents_required": ["aadhaar", "land_records", "bank_account"],
+  "application_process": ["online_portal", "csc_center"],
+  "official_url": "https://pmkisan.gov.in",
+  "deadline": null,
+  "status": "active",
+  "last_updated": "2025-01-15",
+  "source_urls": ["https://..."],
+  "content_hash": "abc123"
+}
+```
+
+### Extraction Architecture
+```
+Raw HTML/PDF → LLM Structured Extraction (Gemini) → Pydantic Validation → Manual Review Queue → Store
+```
+- Use Gemini with structured output (JSON mode) for extraction
+- Pydantic models enforce schema validation
+- Confidence scoring: if extraction confidence < 0.8, route to human review
+- **Why LLM over NER?** Government scheme pages have inconsistent formats; LLM handles variability better than rule-based NER
+
+---
+
+## 3. Knowledge Graph (Neo4j)
+
+### Graph Schema
+```
+(:Scheme {id, name, status, category, benefit_amount, benefit_type})
+(:State {name, code})
+(:Department {name})
+(:Ministry {name})
+(:BeneficiaryType {type})  // farmer, student, woman, senior_citizen
+(:Document {type, name})   // aadhaar, income_cert
+(:EligibilityRule {field, operator, value})
+(:Category {name})         // SC, ST, OBC, General
+```
+
+### Relationships
+```cypher
+(:State)-[:HAS_SCHEME]->(:Scheme)
+(:Ministry)-[:OVERSEES]->(:Department)
+(:Department)-[:MANAGES]->(:Scheme)
+(:BeneficiaryType)-[:ELIGIBLE_FOR]->(:Scheme)
+(:Scheme)-[:REQUIRES_DOCUMENT]->(:Document)
+(:Scheme)-[:HAS_ELIGIBILITY]->(:EligibilityRule)
+(:Scheme)-[:TARGETS_CATEGORY]->(:Category)
+(:Scheme)-[:SIMILAR_TO]->(:Scheme)         // computed similarity
+(:Scheme)-[:SUPERSEDES]->(:Scheme)         // version tracking
+```
+
+### When GraphRAG Helps vs Doesn't
+
+| ✅ Use GraphRAG | ❌ Don't Use GraphRAG |
+|-----------------|----------------------|
+| "Schemes for SC farmers in UP" (multi-hop traversal) | "What is PM-KISAN?" (simple lookup) |
+| "Compare education schemes in Maharashtra vs Karnataka" | "How to apply for MGNREGA?" (procedural) |
+| "Which ministry handles the most farmer schemes?" (aggregation) | "Explain the benefits of Ayushman Bharat" (content retrieval) |
+| Finding related/similar schemes | Summarizing a single scheme |
+
+### Hybrid Graph + Vector Query
+```python
+async def hybrid_retrieve(query: str, user_profile: dict):
+    # 1. Vector search for semantic matches
+    vector_results = await vector_search(query, top_k=20)
+    
+    # 2. Graph traversal for structured matches
+    graph_results = await graph_query(
+        state=user_profile["state"],
+        category=user_profile["category"],
+        occupation=user_profile["occupation"]
+    )
+    
+    # 3. Reciprocal Rank Fusion
+    fused = reciprocal_rank_fusion(vector_results, graph_results, k=60)
+    
+    # 4. Cross-encoder reranking
+    reranked = cross_encoder_rerank(query, fused, top_k=5)
+    return reranked
+```
+
+---
+
+## 4. RAG Architecture
+
+### Retrieval Pipeline (Ordered)
+```
+Query → Query Understanding → Multi-Query Expansion → Parallel Retrieval:
+  ├── Vector Search (pgVector HNSW)
+  ├── BM25 Full-Text (PostgreSQL tsvector)
+  └── Graph Traversal (Neo4j)
+→ RRF Fusion → Cross-Encoder Reranking → Contextual Compression → Citation Grounding → Response
+```
+
+### Component Justifications
+
+| Component | Why It Exists | Expected Gain |
+|-----------|--------------|---------------|
+| **Multi-Query** | Single query misses synonyms; "farmer schemes" vs "agriculture benefits" | +15-20% recall |
+| **Hybrid Search** | Vector catches semantic; BM25 catches exact terms like "PM-KISAN" | +25% recall over vector-only |
+| **Graph Expansion** | Finds schemes through relationships (state→scheme→category) | +10-15% for structured queries |
+| **RRF Fusion** | Combines ranked lists without score normalization issues | Robust combination |
+| **Cross-Encoder Reranking** | Bi-encoders miss nuance; cross-encoders see query+doc jointly | +10-15% precision |
+| **Contextual Compression** | Remove irrelevant chunks before LLM, saves tokens | -30% token cost |
+| **Citation Grounding** | Every claim must cite source URL + paragraph | Trust & auditability |
+
+### Chunking Strategy
+
+| Document Type | Strategy | Chunk Size | Overlap |
+|--------------|----------|------------|---------|
+| Scheme pages | Semantic (by section headers) | 500-800 tokens | 100 tokens |
+| PDFs | Recursive with section awareness | 600 tokens | 120 tokens |
+| Circulars | Full document (usually short) | Whole doc | N/A |
+| Eligibility tables | Row-level + parent context | 200-400 tokens | Parent header |
+
+**Parent-Child Chunking**: Store both large parent chunks (1500 tokens) and small child chunks (300 tokens). Search on children for precision, retrieve parent for context.
+
+### Embedding Strategy
+- **Primary**: `paraphrase-multilingual-MiniLM-L12-v2` (384 dims, 50+ languages including Hindi)
+- **Upgrade path**: `intfloat/multilingual-e5-large` (1024 dims, better quality, higher cost)
+- **Cross-Encoder**: `cross-encoder/ms-marco-MiniLM-L-6-v2` for reranking
+- **Caching**: Cache embeddings in Redis (TTL 24h) for repeated queries
+- **Batch processing**: Embed in batches of 256 for ingestion efficiency
+
+### Vector Database (pgVector)
+```sql
+CREATE TABLE scheme_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scheme_id VARCHAR(50) REFERENCES schemes(scheme_id),
+    content TEXT NOT NULL,
+    chunk_type VARCHAR(20),  -- 'child', 'parent', 'summary'
+    parent_chunk_id UUID REFERENCES scheme_chunks(id),
+    embedding vector(384),
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- HNSW index for fast ANN search
+CREATE INDEX idx_chunks_embedding ON scheme_chunks 
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 200);
+
+-- Full-text search index for BM25
+ALTER TABLE scheme_chunks ADD COLUMN search_vector tsvector;
+CREATE INDEX idx_chunks_fts ON scheme_chunks USING gin(search_vector);
+
+-- Partition by state for query performance
+CREATE TABLE scheme_chunks_central PARTITION OF scheme_chunks FOR VALUES IN ('central');
+CREATE TABLE scheme_chunks_up PARTITION OF scheme_chunks FOR VALUES IN ('UP');
+-- ... per state
+```
