@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String, Text, func
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.orm import DeclarativeBase
 
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 
 class Scheme(Base):
@@ -103,6 +104,29 @@ class SchemeChunk(Base):
     content = Column(Text, nullable=False)
     chunk_type = Column(String(20), nullable=True)
     parent_chunk_id = Column(String(36), nullable=True)
-    embedding = Column(Text, nullable=True)
+    embedding = Column(Vector(384), nullable=True)
+    search_vector = Column(TSVECTOR, nullable=True)
     metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestionEvent(Base):
+    __tablename__ = "ingestion_events"
+
+    id = Column(String(36), primary_key=True)
+    scheme_id = Column(String(64), nullable=True)
+    source_url = Column(String(500), nullable=True)
+    event_type = Column(String(50), nullable=False)  # created|updated|deleted|failed
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(String(36), primary_key=True)
+    actor = Column(String(255), nullable=True)
+    action = Column(String(100), nullable=False)
+    target = Column(String(255), nullable=True)
+    metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

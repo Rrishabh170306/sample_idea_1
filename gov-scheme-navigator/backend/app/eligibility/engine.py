@@ -1,149 +1,140 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, List
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    from json_logic import jsonLogic
+except Exception:  # pragma: no cover - dependency handling
+    try:
+        # Local vendored evaluator
+        from .json_logic import jsonLogic
+    except Exception:
+        def jsonLogic(rules, data):
+            logger.warning("json_logic package not available; jsonLogic calls will return False.")
+            return False
 
 
 @dataclass(slots=True)
 class EligibilityResult:
     eligible: bool
     score: float
-    gaps: list[str] = field(default_factory=list)
+    gaps: List[Dict[str, Any]] = field(default_factory=list)
     explanation: str = ""
 
 
 class EligibilityEngine:
-    def evaluate(self, user_profile: dict[str, Any], scheme_rules: dict[str, Any]) -> EligibilityResult:
+    def evaluate(self, user_profile: Dict[str, Any], scheme_rules: Dict[str, Any]) -> EligibilityResult:
         rules = scheme_rules.get("rules", scheme_rules)
-        eligible = bool(self._evaluate_rule(rules, user_profile))
-        gaps = self._collect_gaps(rules, user_profile)
-        score = self._score(rules, gaps)
-        explanation = self._build_explanation(eligible, gaps)
-        return EligibilityResult(eligible=eligible, score=score, gaps=gaps, explanation=explanation)
 
-    def _evaluate_rule(self, rule: Any, profile: dict[str, Any]) -> bool:
-        if isinstance(rule, bool):
-            return rule
-        if isinstance(rule, (int, float, str)):
-            return bool(rule)
-        if isinstance(rule, list):
-            return all(self._evaluate_rule(item, profile) for item in rule)
-        if not isinstance(rule, dict) or not rule:
-            return False
+        # Primary evaluation
+        try:
+            is_eligible = bool(jsonLogic(rules, user_profile))
+        except Exception as exc:
+            logger.exception("Error evaluating JSONLogic: %s", exc)
+            is_eligible = False
 
-        if "var" in rule and len(rule) == 1:
-            return self._lookup(profile, self._resolve_var_path(rule["var"])) is not None
+        # Gap analysis
+        gaps: List[Dict[str, Any]] = []
+        atomic_checks = []
 
-        operator, operands = next(iter(rule.items()))
-        values = self._resolve_operands(operands, profile)
+        if isinstance(rules, dict) and "and" in rules:
+            atomic_checks = list(rules["and"])
+        else:
+            atomic_checks = [rules]
 
-        if operator == "and":
-            return all(self._evaluate_rule(item, profile) for item in values)
-        if operator == "or":
-            return any(self._evaluate_rule(item, profile) for item in values)
-        if operator == "!":
-            return not self._evaluate_rule(operands, profile)
-        if operator == "in" and len(values) == 2:
-            left, right = values
+        for rule in atomic_checks:
             try:
-                return left in right
-            except TypeError:
-                return False
-        if operator == "==" and len(values) == 2:
-            return values[0] == values[1]
-        if operator == "!=" and len(values) == 2:
-            return values[0] != values[1]
-        if operator == ">" and len(values) == 2:
-            return values[0] > values[1]
-        if operator == ">=" and len(values) == 2:
-            return values[0] >= values[1]
-        if operator == "<" and len(values) == 2:
-            return values[0] < values[1]
-        if operator == "<=" and len(values) == 2:
-            return values[0] <= values[1]
-        return False
+                passed = bool(jsonLogic(rule, user_profile))
+            except Exception:
+                passed = False
 
-    def _collect_gaps(self, rule: Any, profile: dict[str, Any]) -> list[str]:
-        if not isinstance(rule, dict):
-            return [] if self._evaluate_rule(rule, profile) else ["One or more eligibility checks failed."]
+            if not passed:
+                gaps.append(self._explain_gap(rule, user_profile))
 
-        if "and" in rule:
-            gaps: list[str] = []
-            for clause in rule["and"]:
-                if not self._evaluate_rule(clause, profile):
-                    gaps.append(self._describe_clause(clause))
-            return gaps
+        # Score: proportion of passing atomic checks
+        total = len(atomic_checks) if atomic_checks else 1
+        passed_count = total - len(gaps)
+        score = float(passed_count) / float(total)
 
-        return [] if self._evaluate_rule(rule, profile) else [self._describe_clause(rule)]
+        # Explanation
+        if is_eligible:
+            explanation = "You satisfy the available eligibility rules."
+        else:
+            if gaps:
+                explanation = " ".join(g.get("gap", "") for g in gaps)
+            else:
+                explanation = "One or more eligibility conditions were not met."
 
-    def _score(self, rule: Any, gaps: list[str]) -> float:
-        if isinstance(rule, dict) and "and" in rule:
-            total = max(len(rule["and"]), 1)
-            return max(0.0, 1.0 - (len(gaps) / total))
-        return 1.0 if not gaps else 0.0
+        return EligibilityResult(
+            eligible=is_eligible,
+            score=max(0.0, min(1.0, score)),
+            gaps=gaps,
+            explanation=explanation,
+        )
 
-    def _build_explanation(self, eligible: bool, gaps: list[str]) -> str:
-        if eligible:
-            return "You satisfy the available eligibility rules."
-        if not gaps:
-            return "One or more eligibility conditions were not met."
-        return " ".join(gaps)
+    def _explain_gap(self, rule: Dict[str, Any], profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Produce a human-friendly gap explanation for a single JSONLogic rule."""
+        if not isinstance(rule, dict) or not rule:
+            return {"field": "unknown", "user_value": None, "required": None, "gap": "An eligibility condition was not met."}
 
-    def _resolve_operands(self, operands: Any, profile: dict[str, Any]) -> list[Any]:
-        if isinstance(operands, list):
-            return [self._resolve_value(operand, profile) for operand in operands]
-        return [self._resolve_value(operands, profile)]
+        operator = next(iter(rule.keys()))
+        operands = rule[operator]
 
-    def _resolve_value(self, operand: Any, profile: dict[str, Any]) -> Any:
-        if isinstance(operand, dict) and "var" in operand:
-            default = operand.get("default")
-            value = self._lookup(profile, self._resolve_var_path(operand["var"]))
-            return default if value is None else value
-        if isinstance(operand, list):
-            return [self._resolve_value(item, profile) for item in operand]
-        return operand
+        if not isinstance(operands, list):
+            return {"field": "unknown", "user_value": None, "required": None, "gap": f"Condition failed for operator {operator}."}
 
-    def _resolve_var_path(self, path: Any) -> str:
-        if isinstance(path, list):
-            return str(path[0])
-        return str(path)
+        field_name = "unknown"
+        user_value = None
+        required_value = None
 
-    def _lookup(self, profile: dict[str, Any], path: str) -> Any:
-        current: Any = profile
-        for part in path.split("."):
-            if not isinstance(current, dict) or part not in current:
-                return None
-            current = current[part]
-        return current
+        # Extract field name and required value
+        if len(operands) >= 1 and isinstance(operands[0], dict) and "var" in operands[0]:
+            field_name = operands[0]["var"]
+            user_value = profile.get(field_name)
 
-    def _describe_clause(self, clause: Any) -> str:
-        if not isinstance(clause, dict) or not clause:
-            return "An eligibility condition was not met."
+        if len(operands) >= 2:
+            required_value = operands[1]
 
-        operator, operands = next(iter(clause.items()))
-        if operator in {"<", "<=", ">", ">=", "==", "!="} and isinstance(operands, list) and len(operands) == 2:
-            left = self._describe_operand(operands[0])
-            right = self._describe_operand(operands[1])
-            return f"{left} must satisfy {operator} {right}."
-        if operator == "in" and isinstance(operands, list) and len(operands) == 2:
-            left = self._describe_operand(operands[0])
-            right = self._describe_operand(operands[1])
-            return f"{left} must be in {right}."
-        if operator == "!":
-            return f"Condition must not hold: {self._describe_operand(operands)}."
-        if operator in {"and", "or"}:
-            return "One of the grouped eligibility conditions was not met."
-        if operator == "var":
-            return f"Missing required field: {self._describe_operand(operands)}."
-        return "An eligibility condition was not met."
+        gap_msg = ""
+        try:
+            if operator == "<=":
+                if isinstance(user_value, (int, float)) and isinstance(required_value, (int, float)):
+                    diff = round(user_value - required_value, 3)
+                    gap_msg = f"Your {field_name} ({user_value}) exceeds the limit by {diff}."
+                else:
+                    gap_msg = f"Your {field_name} ({user_value}) must be <= {required_value}."
+            elif operator == ">=":
+                if isinstance(user_value, (int, float)) and isinstance(required_value, (int, float)):
+                    diff = round(required_value - user_value, 3)
+                    gap_msg = f"Your {field_name} ({user_value}) is below the minimum by {diff}."
+                else:
+                    gap_msg = f"Your {field_name} ({user_value}) must be >= {required_value}."
+            elif operator == "==":
+                gap_msg = f"Your {field_name} must be exactly {required_value}."
+            elif operator == "in":
+                gap_msg = f"Your {field_name} ({user_value}) is not an accepted value ({required_value})."
+            elif operator == "!":
+                # Negation: usually wraps another operator
+                gap_msg = "A restricted condition was detected."
+                if isinstance(operands[0], dict):
+                    inner = operands[0]
+                    inner_op = next(iter(inner.keys()))
+                    inner_operands = inner.get(inner_op)
+                    if inner_op == "in" and isinstance(inner_operands, list) and len(inner_operands) == 2:
+                        fn = inner_operands[0].get("var") if isinstance(inner_operands[0], dict) else None
+                        uv = profile.get(fn) if fn else None
+                        gap_msg = f"Your {fn} ({uv}) is restricted from this scheme."
+            else:
+                gap_msg = f"Condition {operator} failed for {field_name}."
+        except Exception:
+            gap_msg = f"Condition {operator} failed for {field_name}."
 
-    def _describe_operand(self, operand: Any) -> str:
-        if isinstance(operand, dict) and "var" in operand:
-            return str(operand["var"])
-        if isinstance(operand, list):
-            return ", ".join(self._describe_operand(item) for item in operand)
-        return repr(operand)
+        return {"field": field_name, "user_value": user_value, "required": required_value, "gap": gap_msg}
 
 
-def evaluate_eligibility(user_profile: dict[str, Any], scheme_rules: dict[str, Any]) -> EligibilityResult:
+def evaluate_eligibility(user_profile: Dict[str, Any], scheme_rules: Dict[str, Any]) -> EligibilityResult:
     return EligibilityEngine().evaluate(user_profile, scheme_rules)

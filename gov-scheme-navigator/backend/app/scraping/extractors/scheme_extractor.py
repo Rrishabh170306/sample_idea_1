@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from pydantic import ValidationError
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
-except ImportError:
+except Exception:
     genai = None
 
 
@@ -77,13 +76,30 @@ Return JSON with 'record' and 'confidence' fields.
 
     def __init__(self):
         """Initialize SchemeExtractor with Gemini API if available."""
-        self.use_llm = genai is not None and settings.GEMINI_API_KEY
-        if self.use_llm:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.model = genai.GenerativeModel("gemini-pro")
-        else:
-            logger.warning("Gemini API not configured. Using fallback extraction.")
+        # Determine provider and credentials from settings (backwards compatible)
+        provider = (getattr(settings, "llm_provider", "")).lower() or "gemini"
+        api_key = getattr(settings, "llm_api_key", None) or getattr(settings, "GEMINI_API_KEY", None)
+
+        self.use_llm = False
+        self._provider = provider
+        self.model = None
+
+        if provider == "gemini" and genai is not None and api_key:
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel(getattr(settings, "llm_model", "gemini-pro"))
+                self.use_llm = True
+            except Exception:
+                logger.exception("Failed to configure Gemini model; falling back to HTTP LLM if available")
+
+        # If not Gemini or genai unavailable, fall back to HTTP-based self-hosted LLM endpoint
+        if not self.use_llm and getattr(settings, "llm_api_url", None) and api_key:
+            self.use_llm = True
+            # HTTP-based flow will use settings.llm_api_url and settings.llm_api_key
             self.model = None
+
+        if not self.use_llm:
+            logger.warning("LLM not configured. Using fallback extraction.")
 
     def extract(
         self, raw_content: str, source_url: str | None = None
@@ -130,16 +146,12 @@ Return JSON with 'record' and 'confidence' fields.
         prompt = self.EXTRACTION_PROMPT_TEMPLATE.format(content=content_truncated)
 
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.1,  # Low temperature for consistency
-                    "top_p": 0.9,
-                    "top_k": 40,
-                },
-            )
+            # Use unified LLM client
+            from app.llm.client import LLMClient
 
-            response_text = response.text
+            client = LLMClient()
+            # Use sync wrapper to remain compatible with synchronous extractor
+            response_text = client.generate_sync(prompt, temperature=0.1, max_tokens=1024)
 
             # Extract JSON from response
             json_str = self._extract_json_from_text(response_text)
@@ -157,6 +169,45 @@ Return JSON with 'record' and 'confidence' fields.
             raise
         except Exception as e:
             logger.error(f"LLM extraction failed: {e}")
+            raise
+        # Should never reach here, raise for mypy
+        raise RuntimeError("LLM extraction failed to return a result")
+
+    def _call_http_llm(self, prompt: str) -> str:
+        """Call a generic HTTP LLM endpoint using `httpx`.
+
+        Expects `settings.llm_api_url` and `settings.llm_api_key` to be set.
+        The function attempts to parse common JSON response shapes and
+        falls back to raw text.
+        """
+        try:
+            import httpx
+
+            url = getattr(settings, "llm_api_url")
+            api_key = getattr(settings, "llm_api_key")
+            model = getattr(settings, "llm_model", None)
+
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            payload = {"prompt": prompt}
+            if model:
+                payload["model"] = model
+
+            resp = httpx.post(url, json=payload, headers=headers, timeout=30.0)
+            resp.raise_for_status()
+
+            # Try to parse JSON and extract common fields
+            try:
+                data = resp.json()
+                if isinstance(data, dict):
+                    for key in ("output", "text", "response", "result", "content"):
+                        if key in data:
+                            return data[key]
+                    return json.dumps(data)
+            except Exception:
+                return resp.text
+
+        except Exception as exc:
+            logger.exception("HTTP LLM call failed: %s", exc)
             raise
 
     def _extract_with_fallback(

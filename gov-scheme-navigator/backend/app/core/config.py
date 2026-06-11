@@ -3,6 +3,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from urllib.parse import urlparse
+
+
+def _parse_redis_url(value: str) -> tuple[str, int, int]:
+    try:
+        parsed = urlparse(value)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+        db = int((parsed.path or "").lstrip('/') or 0)
+        return host, port, db
+    except Exception:
+        return "localhost", 6379, 0
 
 
 def _split_csv(value: str) -> list[str]:
@@ -26,9 +38,24 @@ class Settings:
     )
     neo4j_uri: str = field(default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687"))
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    # Convenience parsed fields for code that expects host/port/db
+    redis_host: str = field(default_factory=lambda: _parse_redis_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))[0])
+    redis_port: int = field(default_factory=lambda: _parse_redis_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))[1])
+    redis_db: int = field(default_factory=lambda: _parse_redis_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))[2])
     rate_limit: str = field(default_factory=lambda: os.getenv("RATE_LIMIT", "100/minute"))
+    # Generic LLM configuration (supports Gemini, Claude, or self-hosted endpoints)
+    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", os.getenv("LLM", "gemini")))
+    llm_api_key: str | None = field(
+        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("CLAUDE_API_KEY")
+    )
+    llm_api_url: str | None = field(default_factory=lambda: os.getenv("LLM_API_URL", None))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-pro"))
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+# Export a singleton `settings` for backwards compatibility across the codebase
+settings = get_settings()

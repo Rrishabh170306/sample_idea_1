@@ -6,7 +6,6 @@ Uses PyMuPDF for fast extraction and Tesseract for scanned documents.
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import re
 from dataclasses import dataclass

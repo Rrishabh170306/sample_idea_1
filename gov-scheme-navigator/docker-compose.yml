@@ -11,6 +11,10 @@ services:
       DATABASE_URL: postgresql+psycopg://user:pass@postgres:5432/govschemes
       NEO4J_URI: bolt://neo4j:7687
       REDIS_URL: redis://redis:6379/0
+      # LLM configuration (set to 'claude' for self-hosted Claude endpoints)
+      LLM_PROVIDER: ""
+      LLM_API_URL: ""
+      LLM_API_KEY: ""
 
   postgres:
     image: pgvector/pgvector:pg16

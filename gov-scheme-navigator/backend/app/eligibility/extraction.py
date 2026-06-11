@@ -13,13 +13,14 @@ from typing import Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import Column, String, Float, JSON, DateTime, Boolean, Integer
+from sqlalchemy import Column, String, Float, JSON, DateTime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 
 logger = logging.getLogger(__name__)
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 
 class ExtractionStatus(str, Enum):
@@ -59,9 +60,9 @@ class LandOwnershipSchema(BaseModel):
 
 class EligibilitySchema(BaseModel):
     """Enhanced eligibility schema."""
-    age: AgeSchema = Field(default_factory=AgeSchema)
+    age: AgeSchema = Field(default_factory=lambda: AgeSchema())
     income: Optional[dict[str, float]] = None  # {"max": 500000, "type": "annual"}
-    land_ownership: LandOwnershipSchema = Field(default_factory=LandOwnershipSchema)
+    land_ownership: LandOwnershipSchema = Field(default_factory=lambda: LandOwnershipSchema())
     occupation: list[str] = Field(default_factory=list)
     states: list[str] = Field(default_factory=list)
     exclusions: list[str] = Field(default_factory=list)
@@ -99,8 +100,8 @@ class EnhancedSchemeSchema(BaseModel):
     state: str  # "Central", "UP", etc.
     category: list[str] = Field(default_factory=list)
     target_beneficiaries: list[str] = Field(default_factory=list)
-    eligibility: EligibilitySchema = Field(default_factory=EligibilitySchema)
-    benefits: BenefitsSchema = Field(default_factory=BenefitsSchema)
+    eligibility: EligibilitySchema = Field(default_factory=lambda: EligibilitySchema())
+    benefits: BenefitsSchema = Field(default_factory=lambda: BenefitsSchema())
     documents_required: list[DocumentSchema] = Field(default_factory=list)
     application_process: list[str] = Field(default_factory=list)
     official_url: Optional[str] = None
@@ -307,16 +308,13 @@ class LLMSchemeExtractor:
     async def _llm_extract(self, content: str) -> dict:
         """LLM-based extraction (requires Gemini API)."""
         try:
-            import google.generativeai as genai
-            from app.core.config import settings
+            from app.llm.client import LLMClient
 
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            model = genai.GenerativeModel("gemini-pro")
-
+            client = LLMClient()
             prompt = self.EXTRACTION_PROMPT.format(content=content[:3000])
-            response = model.generate_content(prompt)
-            
-            json_str = self._extract_json(response.text)
+            resp_text = await client.generate(prompt)
+
+            json_str = self._extract_json(resp_text)
             return json.loads(json_str)
         except Exception as e:
             raise e
@@ -324,13 +322,11 @@ class LLMSchemeExtractor:
     def _regex_extract(self, content: str, source_url: str) -> dict:
         """Fallback regex-based extraction."""
         import re
-        from urllib.parse import urlparse
 
         # Extract basic fields using patterns
         name_match = re.search(r"<h1[^>]*>([^<]+)</h1>", content)
         scheme_name = name_match.group(1).strip() if name_match else "Unknown"
 
-        domain = urlparse(source_url).netloc
         scheme_id = f"{scheme_name.replace(' ', '-').upper()}-001"
 
         return {
@@ -366,7 +362,6 @@ class LLMSchemeExtractor:
 
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text response."""
-        import re
         
         brace_start = text.find("{")
         if brace_start == -1:

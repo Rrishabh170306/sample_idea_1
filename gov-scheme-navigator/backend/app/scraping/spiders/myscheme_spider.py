@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -13,6 +11,7 @@ from pydantic import ValidationError
 
 from app.scraping.extractors.scheme_extractor import SchemeExtractor
 from app.core.config import settings
+from app.scraping.change_detector import ChangeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +37,13 @@ class MySchemeSpider:
     TIMEOUT = 30000  # milliseconds
 
     def __init__(self):
-        self.redis_client = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            decode_responses=True,
-        )
+        # Prefer a redis URL when available
+        try:
+            self.redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+        except Exception:
+            self.redis_client = redis.Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+
+        self.change_detector = ChangeDetector(redis_client=self.redis_client)
         self.extractor = SchemeExtractor()
         self.browser: Browser | None = None
         self.session_index = 0
@@ -113,10 +114,10 @@ class MySchemeSpider:
             # Get full page HTML for extraction
             content = await page.content()
 
-            # Change detection
-            has_changed = self._check_change_detection(url, content)
-            if not has_changed:
-                logger.info(f"No changes detected for {url}")
+            # Change detection (uses ChangeDetector for canonicalization and atomic updates)
+            change_result = self.change_detector.has_changed(url, content)
+            if not change_result.changed:
+                logger.info("No changes detected for %s (hash=%s)", url, change_result.new_hash[:8])
                 return None
 
             # Extract structured data using LLM
@@ -132,7 +133,7 @@ class MySchemeSpider:
             scheme_data = extraction_result.record.model_dump()
             scheme_data.update({
                 "source_url": url,
-                "content_hash": hashlib.sha256(content.encode()).hexdigest(),
+                "content_hash": change_result.new_hash,
                 "confidence_score": extraction_result.confidence,
                 "crawled_at": datetime.utcnow().isoformat(),
             })
@@ -160,14 +161,13 @@ class MySchemeSpider:
         Check if page content has changed using hash comparison.
         Updates Redis with new hash and timestamp.
         """
-        new_hash = hashlib.sha256(content.encode()).hexdigest()
-        cache_key = f"page_hash:{url}"
-        old_hash = self.redis_client.get(cache_key)
-
-        self.redis_client.set(cache_key, new_hash)
-        self.redis_client.set(f"page_crawled_at:{url}", datetime.utcnow().isoformat())
-
-        return new_hash != old_hash
+        # Legacy helper retained for backward compatibility
+        try:
+            result = self.change_detector.has_changed(url, content)
+            return result.changed
+        except Exception:
+            logger.exception("Change detection failed for %s, assuming changed to force reprocess.", url)
+            return True
 
     async def _get_page(self) -> Page:
         """Get or create Playwright page with anti-bot headers."""

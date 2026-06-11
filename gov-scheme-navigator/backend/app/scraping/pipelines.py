@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Scheme
-from app.scraping.change_detector import VersionTracker, FreshnessMonitor
+from app.scraping.change_detector import VersionTracker, ChangeDetector
 from app.rag.embedder import EmbeddingService
 
 logger = logging.getLogger(__name__)
@@ -63,10 +63,8 @@ class NormalizeItemPipeline:
         )
 
         # Ensure schema compliance
-        item["status"] = item.get("status", "active").lower()
-        item["crawled_at"] = item.get(
-            "crawled_at", datetime.utcnow().isoformat()
-        )
+        item["status"] = str(item.get("status", "active")).lower()
+        item["crawled_at"] = str(item.get("crawled_at", datetime.utcnow().isoformat()))
 
         self.normalized += 1
         logger.info(f"Normalized scheme: {item.get('scheme_id')}")
@@ -145,6 +143,7 @@ class StoragePipeline:
         self.version_tracker = VersionTracker(db_session) if db_session else None
         self.stored = 0
         self.updated = 0
+        self.change_detector = ChangeDetector() if db_session else None
 
     async def process_item(self, item: dict[str, object]) -> dict[str, object]:
         """
@@ -185,15 +184,27 @@ class StoragePipeline:
             if self.embedding_service:
                 await self._generate_embeddings(item)
 
+            # Check for content changes (debounced by ChangeDetector)
+            try:
+                content_for_hash = str(item.get("content") or item.get("name") or "").encode("utf-8")
+                if self.change_detector and item.get("official_url"):
+                    change_res = self.change_detector.has_changed(str(item.get("official_url")), content_for_hash)
+                    # Attach change metadata
+                    item["_change_detected"] = change_res.changed
+                    item["_old_hash"] = change_res.old_hash
+                    item["_new_hash"] = change_res.new_hash
+            except Exception:
+                logger.debug("Could not compute change detection for item %s", item.get("scheme_id"), exc_info=True)
+
             # Track version
             if self.version_tracker:
                 await self.version_tracker.store_version(
-                    scheme_id=scheme_id,
-                    content=item.get("name", ""),
-                    source_url=item.get("source_url", ""),
-                    content_hash=item.get("content_hash", ""),
+                    scheme_id=str(scheme_id),
+                    content=str(item.get("name", "")),
+                    source_url=str(item.get("source_url", "")),
+                    content_hash=str(item.get("content_hash", "")),
                     metadata={
-                        "confidence": item.get("confidence_score", 0.0),
+                        "confidence": float(item.get("confidence_score", 0.0)),
                         "extraction_method": "llm",
                     },
                 )
@@ -260,12 +271,19 @@ class StoragePipeline:
         """Generate embeddings for scheme description and benefits."""
         scheme_id = item.get("scheme_id")
         text_to_embed = f"{item.get('name')} {item.get('benefits', {}).get('description', '')}"
-
         try:
-            embedding = await self.embedding_service.embed_text(text_to_embed)
-            logger.info(f"Generated embedding for {scheme_id}")
+            # The EmbeddingService provides a synchronous `embed_texts` method that
+            # returns a list of embeddings for the provided texts.
+            embeddings = self.embedding_service.embed_texts([text_to_embed])
+            embedding = embeddings[0] if embeddings else None
+            if embedding is not None:
+                # Attach embedding to item for downstream storage or vector upsert
+                item["_embedding"] = embedding
+                logger.info("Generated embedding for %s", scheme_id)
+            else:
+                logger.debug("No embedding generated for %s", scheme_id)
         except Exception as e:
-            logger.error(f"Failed to generate embedding for {scheme_id}: {e}")
+            logger.error("Failed to generate embedding for %s: %s", scheme_id, e)
 
     def close_spider(self, spider):
         logger.info(f"Storage complete. Stored: {self.stored}, Updated: {self.updated}")

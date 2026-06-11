@@ -34,50 +34,6 @@ services:
     depends_on: [postgres, redis]
 ```
 
-### Kubernetes (Production)
-```
-                    ┌─────────────┐
-                    │  Ingress    │
-                    │  (Nginx)    │
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-        ┌─────▼─────┐ ┌───▼────┐ ┌────▼─────┐
-        │ API Pods   │ │ Worker │ │ Scraper  │
-        │ (3-10)     │ │ Pods   │ │ CronJob  │
-        │ FastAPI    │ │(Agent) │ │ (Scrapy) │
-        └─────┬──────┘ └───┬────┘ └────┬─────┘
-              │            │            │
-    ┌─────────┼────────────┼────────────┼──────────┐
-    │         │            │            │          │
-┌───▼──┐ ┌───▼──┐  ┌──────▼──┐  ┌─────▼──┐ ┌────▼───┐
-│Postgres│ │Redis │  │  Neo4j  │  │ Blob   │ │ Kafka  │
-│pgVector│ │Cluster│  │ Cluster │  │Storage │ │(V2)    │
-└────────┘ └──────┘  └─────────┘  └────────┘ └────────┘
-```
-
-### Scaling Strategy
-| Component | MVP | V2 (100K users) | V3 (1M+ users) |
-|-----------|-----|-----------------|-----------------|
-| API | 2 pods | 5 pods + HPA | 10+ pods, regional |
-| PostgreSQL | Single | Primary + 2 read replicas | Citus sharding |
-| Neo4j | Community single | Enterprise cluster | Aura managed |
-| Redis | Single | Sentinel (3 nodes) | Redis Cluster |
-| Worker | 2 pods | 5 pods | Autoscaled |
-
-### Cost Estimates (Monthly)
-| Component | MVP (AWS) | V2 | V3 |
-|-----------|-----------|-----|-----|
-| Compute (EKS) | $200 | $800 | $3,000 |
-| PostgreSQL (RDS) | $50 | $200 | $800 |
-| Neo4j | $0 (community) | $300 | $1,000 |
-| Redis (ElastiCache) | $30 | $100 | $400 |
-| LLM API (Gemini) | $100 | $500 | $2,000 |
-| Storage (S3) | $10 | $50 | $200 |
-| **Total** | **~$400** | **~$2,000** | **~$7,500** |
-
----
 
 ## 2. Middleware & Security
 
@@ -189,42 +145,7 @@ results = evaluate(
 
 ---
 
-## 6. Phased Roadmap
 
-### MVP (8-10 weeks) — Essential Components
-- [x] FastAPI backend + PostgreSQL + pgVector
-- [x] MyScheme.gov.in scraper (100-200 central schemes)
-- [x] Basic RAG pipeline (vector search + BM25)
-- [x] 5 core agents: Orchestrator, Classifier, Retrieval, Eligibility, Response
-- [x] JSONLogic eligibility engine (top 50 schemes)
-- [x] Simple chat UI
-- [x] Docker Compose deployment
-- [ ] ~~Neo4j/GraphRAG~~ (defer)
-- [ ] ~~MCP servers~~ (defer)
-- [ ] ~~Document Intelligence~~ (defer)
-
-### V2 (12-16 weeks) — Production Features
-- [ ] Neo4j knowledge graph + GraphRAG hybrid retrieval
-- [ ] Document upload + OCR pipeline
-- [ ] All 15 agents with full LangGraph orchestration
-- [ ] State scheme scrapers (top 10 states)
-- [ ] Multilingual support (Hindi + 5 regional)
-- [ ] Human review queue + admin dashboard
-- [ ] MCP server architecture
-- [ ] Kubernetes deployment
-- [ ] RAGAS evaluation pipeline
-
-### V3 (20-24 weeks) — Scale & Intelligence
-- [ ] 4000+ schemes coverage (all states)
-- [ ] Advanced document verification
-- [ ] Conversational memory + personalization
-- [ ] Kafka event streaming
-- [ ] Regional language OCR
-- [ ] Mobile-optimized frontend
-- [ ] Analytics dashboard
-- [ ] Federated deployment (state-level instances)
-
----
 
 ## 7. Risks & Mitigations
 

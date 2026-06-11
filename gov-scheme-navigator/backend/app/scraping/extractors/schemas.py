@@ -31,8 +31,8 @@ class SchemeSchema(BaseModel):
     state: str | None = None
     category: list[str] = Field(default_factory=list)
     target_beneficiaries: list[str] = Field(default_factory=list)
-    eligibility: EligibilitySchema = Field(default_factory=EligibilitySchema)
-    benefits: BenefitSchema = Field(default_factory=BenefitSchema)
+    eligibility: EligibilitySchema = Field(default_factory=lambda: EligibilitySchema())
+    benefits: BenefitSchema = Field(default_factory=lambda: BenefitSchema())
     documents_required: list[str] = Field(default_factory=list)
     application_process: list[str] = Field(default_factory=list)
     official_url: str | None = None

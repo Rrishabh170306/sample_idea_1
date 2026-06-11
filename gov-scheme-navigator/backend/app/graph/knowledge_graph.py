@@ -5,15 +5,13 @@ Handles graph schema, relationships, GraphRAG queries, and hybrid search.
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Any
 from uuid import uuid4
 
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +62,33 @@ class GraphNode:
             self.updated_at = datetime.utcnow()
 
     def to_cypher_properties(self) -> str:
-        """Convert properties to Cypher format."""
-        props = self.properties.copy()
+        """Convert properties to a Cypher map literal.
+
+        Uses Python `repr` for safe string quoting and handles basic types.
+        """
+        props = dict(self.properties or {})
         props["id"] = self.id
         props["created_at"] = self.created_at.isoformat()
         props["updated_at"] = self.updated_at.isoformat()
 
-        formatted = ", ".join(
-            [f"{k}: '{v}'" if isinstance(v, str) else f"{k}: {v}"
-             for k, v in props.items()]
-        )
+        def _format_value(v: Any) -> str:
+            if v is None:
+                return "null"
+            if isinstance(v, str):
+                return repr(v)
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            if isinstance(v, (int, float)):
+                return str(v)
+            if isinstance(v, dict):
+                inner = ", ".join(f"{k}: {_format_value(val)}" for k, val in v.items())
+                return f"{{{inner}}}"
+            if isinstance(v, (list, tuple)):
+                inner = ", ".join(_format_value(x) for x in v)
+                return f"[{inner}]"
+            return repr(str(v))
+
+        formatted = ", ".join(f"{k}: {_format_value(v)}" for k, v in props.items())
         return f"{{{formatted}}}"
 
 
@@ -344,15 +359,25 @@ class GraphBuilder:
 
         # Create nodes
         for node in self.nodes.values():
-            query = f"CREATE (n:{node.node_type} {node.to_cypher_properties()})"
+            # Use node_type value as label
+            label = node.node_type.value if hasattr(node.node_type, 'value') else str(node.node_type)
+            query = f"CREATE (n:{label} {node.to_cypher_properties()})"
             queries.append(query)
 
         # Create relationships
         for rel in self.relationships:
+            # Match by id property and create relationship with properties
+            rel_type = rel.rel_type.value if hasattr(rel.rel_type, 'value') else str(rel.rel_type)
+            props = ""
+            if rel.properties:
+                # Safely format relationship properties using repr for values
+                props_map = ", ".join(f"{k}: {repr(v)}" for k, v in (rel.properties or {}).items())
+                props = f" {{{props_map}}}"
+
             query = (
-                f"MATCH (a {{{{'id': '{rel.source_id}'}}}}) "
-                f"MATCH (b {{{{'id': '{rel.target_id}'}}}}) "
-                f"CREATE (a)-[:{rel.rel_type}]->(b)"
+                f"MATCH (a {{id: {repr(rel.source_id)}}}) "
+                f"MATCH (b {{id: {repr(rel.target_id)}}}) "
+                f"CREATE (a)-[:{rel_type}{props}]->(b)"
             )
             queries.append(query)
 
@@ -550,9 +575,7 @@ class HybridRetriever:
             return results
 
         try:
-            # Embed query
-            query_embedding = await self.embedding_model.embed(query)
-
+            # Embed query (embedding step omitted in this mock implementation)
             # Compare with scheme embeddings (mock for now)
             for node in self.builder.nodes.values():
                 if node.node_type == NodeType.SCHEME:
