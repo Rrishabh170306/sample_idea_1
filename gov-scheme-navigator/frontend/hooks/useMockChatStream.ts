@@ -2,8 +2,11 @@
 
 import * as React from 'react';
 import { simulateStream, type ChatStatus, type DemoResponse } from '@/services/mockChatService';
+import { useArtifactStore } from '@/store/artifactStore';
+import { mockArtifacts } from '@/components/artifacts/ArtifactRegistry';
 
 export function useMockChatStream() {
+  const addArtifact = useArtifactStore((state) => state.addArtifact);
   const [status, setStatus] = React.useState<ChatStatus>('Thinking');
   const [text, setText] = React.useState('');
   const [citations, setCitations] = React.useState<DemoResponse['citations']>([]);
@@ -25,6 +28,16 @@ export function useMockChatStream() {
           setCitations(chunk.citations);
         }
       }
+
+      mockArtifacts.forEach((artifact) => {
+        addArtifact({
+          id: artifact.id,
+          type: artifact.type,
+          title: artifact.title,
+          summary: artifact.summary,
+          status: 'ready',
+        });
+      });
     } catch (err) {
       setError('Streaming failed. Please try again.');
     } finally {

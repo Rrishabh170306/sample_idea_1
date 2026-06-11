@@ -5,6 +5,7 @@ import { EmptyState } from './EmptyState';
 import { SidebarNav } from './SidebarNav';
 import { TopBar } from './TopBar';
 import { ChatWorkspace } from '@/components/chat/ChatWorkspace';
+import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel';
 import { useWorkspaceStore } from '@/store/workspaceStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -61,13 +62,7 @@ export function WorkspaceShell() {
 
               {artifactPanelOpen ? (
                 <aside className="mt-4 w-full shrink-0 border-t border-slate-800 pt-4 lg:mt-0 lg:ml-4 lg:w-96 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0 xl:w-[420px]">
-                  <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                    <p className="text-xs uppercase tracking-[0.28em] text-violet-300">Artifacts</p>
-                    <h3 className="mt-2 text-base font-semibold text-white">Ready for your next insight</h3>
-                    <p className="mt-2 text-sm text-slate-300">
-                      Eligibility reports, scheme details, comparisons, and document analysis will appear here as the artifact system is wired in.
-                    </p>
-                  </div>
+                  <ArtifactPanel />
                 </aside>
               ) : null}
             </div>
