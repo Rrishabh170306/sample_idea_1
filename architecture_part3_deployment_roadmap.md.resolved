@@ -9,10 +9,10 @@ services:
     build: ./backend
     ports: ["8000:8000"]
     depends_on: [postgres, neo4j, redis]
-    environment:
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/govschemes
-      - NEO4J_URI=bolt://neo4j:7687
-      - REDIS_URL=redis://redis:6379
+        environment:
+            - DATABASE_URL=postgresql://<DB_USER>:<DB_PASSWORD>@postgres:5432/govschemes
+            - NEO4J_URI=bolt://neo4j:7687
+            - REDIS_URL=redis://redis:6379
 
   postgres:
     image: pgvector/pgvector:pg16

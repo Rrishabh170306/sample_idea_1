@@ -30,11 +30,9 @@ class Settings:
     cors_origins: list[str] = field(
         default_factory=lambda: _split_csv(os.getenv("CORS_ORIGINS", "*")) or ["*"]
     )
+    # Database URL should be provided via environment variable; keep empty if unset
     database_url: str = field(
-        default_factory=lambda: os.getenv(
-            "DATABASE_URL",
-            "postgresql+psycopg://user:pass@localhost:5432/govschemes",
-        )
+        default_factory=lambda: os.getenv("DATABASE_URL", "")
     )
     neo4j_uri: str = field(default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687"))
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
@@ -50,6 +48,8 @@ class Settings:
     )
     llm_api_url: str | None = field(default_factory=lambda: os.getenv("LLM_API_URL", None))
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-pro"))
+    # If >0 the scraper runner will repeat every N seconds; 0 (default) runs once
+    scrape_interval_seconds: int = field(default_factory=lambda: int(os.getenv("SCRAPE_INTERVAL_SECONDS", "0") or 0))
 
 
 @lru_cache(maxsize=1)

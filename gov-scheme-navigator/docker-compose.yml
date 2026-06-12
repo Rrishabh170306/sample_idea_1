@@ -1,5 +1,7 @@
 services:
   backend:
+    env_file:
+      - .env
     build: ./backend
     ports:
       - "8000:8000"
@@ -8,32 +10,37 @@ services:
       - neo4j
       - redis
     environment:
-      DATABASE_URL: postgresql+psycopg://user:pass@postgres:5432/govschemes
-      NEO4J_URI: bolt://neo4j:7687
-      REDIS_URL: redis://redis:6379/0
-      # LLM configuration (set to 'claude' for self-hosted Claude endpoints)
-      LLM_PROVIDER: ""
-      LLM_API_URL: ""
-      LLM_API_KEY: ""
+      DATABASE_URL: ${DATABASE_URL}
+      NEO4J_URI: ${NEO4J_URI}
+      REDIS_URL: ${REDIS_URL}
+      # LLM configuration (set via .env)
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      LLM_API_URL: ${LLM_API_URL}
+      LLM_API_KEY: ${LLM_API_KEY}
 
   postgres:
+    env_file:
+      - .env
     image: pgvector/pgvector:pg16
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: govschemes
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
 
   neo4j:
+    env_file:
+      - .env
     image: neo4j:5-community
     ports:
       - "7474:7474"
       - "7687:7687"
+    # Credentials can be supplied via .env: set NEO4J_AUTH=neo4j/password or NEO4J_USER/NEO4J_PASSWORD
     environment:
-      NEO4J_AUTH: neo4j/password
+      NEO4J_AUTH: ${NEO4J_AUTH}
     volumes:
       - neo4jdata:/data
 
@@ -43,8 +50,10 @@ services:
       - "6379:6379"
 
   scraper:
+    env_file:
+      - .env
     build: ./backend
-    command: ["scrapy", "crawl", "myscheme"]
+    command: ["python", "-m", "app.scraping.runner"]
     depends_on:
       - postgres
       - redis
