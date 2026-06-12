@@ -28,7 +28,7 @@ pip install -r requirements-pinned.txt
 Example `.env`:
 
 ```
-DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/govschemes
+DATABASE_URL=postgresql+psycopg://<DB_USER>:<DB_PASSWORD>@localhost:5432/govschemes
 REDIS_URL=redis://localhost:6379/0
 NEO4J_URI=bolt://localhost:7687
 APP_ENV=development
