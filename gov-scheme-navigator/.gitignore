@@ -52,3 +52,14 @@ docker-compose.override.yml
 
 # Playwright browsers
 playwright/.local-browsers/
+
+
+#Node modules
+node_modules/
+.next/
+dist/
+build/
+.env
+.env.local
+__pycache__/
+*.pyc

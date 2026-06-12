@@ -24,4 +24,5 @@ class AgentState(TypedDict, total=False):
     needs_human_review: bool
     response: str
     session_id: str
+    user_email: str
     turn_count: int

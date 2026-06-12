@@ -1,31 +1,78 @@
 "use client";
 
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import * as React from 'react';
+import { loadProfileFromServer, saveProfileToServer } from '@/lib/profile/service';
 import { loadSession, saveSession } from './session';
 
 export function ProfileForm() {
   const router = useRouter();
+  const { data: session, status } = useSession();
   const [form, setForm] = React.useState(() => loadSession());
-  const [submitted, setSubmitted] = React.useState(false);
+  const [isLoading, setIsLoading] = React.useState(true);
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    if (!form.authenticated) {
-      router.replace('/auth');
-    }
-  }, [form.authenticated, router]);
+  const userEmail = session?.user?.email ?? '';
 
   const updateField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const hydrateProfile = React.useCallback(async () => {
+    if (status === 'loading') {
+      setIsLoading(true);
+      return;
+    }
+
+    if (status !== 'authenticated' || !userEmail) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadError(null);
+
+    try {
+      const serverProfile = await loadProfileFromServer(userEmail);
+      setForm(serverProfile);
+      saveSession(serverProfile);
+    } catch {
+      setForm(loadSession());
+      setLoadError('Could not load your saved profile from the server. Using your local draft for now.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [status, userEmail]);
+
+  React.useEffect(() => {
+    void hydrateProfile();
+  }, [hydrateProfile]);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    saveSession(form);
-    setSubmitted(true);
-    window.setTimeout(() => {
+
+    if (!userEmail) {
+      setSaveError('You need to be signed in before saving your profile.');
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(null);
+
+    try {
+      const savedProfile = await saveProfileToServer(userEmail, form);
+      setForm(savedProfile);
+      saveSession(savedProfile);
       router.push('/chat');
-    }, 450);
+    } catch {
+      saveSession(form);
+      setSaveError('Could not save your profile to the server. Your latest draft is stored locally. Please retry.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -35,6 +82,18 @@ export function ProfileForm() {
       <p className="page-copy">
         We collect these details once so the chatbot can reason about eligibility consistently.
       </p>
+
+      {session?.user?.email ? <p className="helper-text">Signed in as {session.user.email}</p> : null}
+      {isLoading ? <p className="helper-text">Loading your saved profile...</p> : null}
+      {loadError ? <p className="helper-text">{loadError}</p> : null}
+      {loadError ? (
+        <div className="action-row">
+          <button type="button" className="btn" onClick={() => void hydrateProfile()}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+      {saveError ? <p className="helper-text">{saveError}</p> : null}
 
       <form onSubmit={handleSubmit} className="profile-form">
         <div className="form-grid">
@@ -77,8 +136,8 @@ export function ProfileForm() {
         </div>
 
         <div className="action-row">
-          <button type="submit" className="primary-button" disabled={submitted}>
-            {submitted ? 'Saving…' : 'Save profile and continue'}
+          <button type="submit" className="primary-button" disabled={isSaving || isLoading}>
+            {isSaving ? 'Saving...' : 'Save profile and continue'}
           </button>
         </div>
       </form>

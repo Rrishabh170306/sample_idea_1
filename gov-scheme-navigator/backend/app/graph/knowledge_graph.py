@@ -403,6 +403,10 @@ class GraphQuery:
     def __init__(self, graph_builder: GraphBuilder):
         self.builder = graph_builder
 
+    @staticmethod
+    def _scheme_payload(node: GraphNode) -> dict:
+        return {"id": node.id, **(node.properties or {})}
+
     def find_schemes_by_state(self, state: str) -> list[dict]:
         """Find all schemes in a state."""
         results = []
@@ -414,7 +418,7 @@ class GraphQuery:
                     if rel.rel_type == RelationType.HAS_SCHEME and rel.source_id == node.id:
                         scheme_node = self.builder.nodes.get(rel.target_id)
                         if scheme_node:
-                            results.append(scheme_node.properties)
+                            results.append(self._scheme_payload(scheme_node))
 
         return results
 
@@ -428,10 +432,10 @@ class GraphQuery:
                 # Find schemes eligible for this beneficiary
                 for rel in self.builder.relationships:
                     if (rel.rel_type == RelationType.ELIGIBLE_FOR and
-                        rel.target_id == node.id):
-                        scheme_node = self.builder.nodes.get(rel.source_id)
+                        rel.source_id == node.id):
+                        scheme_node = self.builder.nodes.get(rel.target_id)
                         if scheme_node:
-                            results.append(scheme_node.properties)
+                            results.append(self._scheme_payload(scheme_node))
 
         return results
 
@@ -448,7 +452,7 @@ class GraphQuery:
                         rel.target_id == node.id):
                         scheme_node = self.builder.nodes.get(rel.source_id)
                         if scheme_node:
-                            results.append(scheme_node.properties)
+                            results.append(self._scheme_payload(scheme_node))
 
         return results
 
@@ -475,7 +479,7 @@ class GraphQuery:
             results = list(set(results) & schemes_by_category)
 
         # Return full scheme data
-        return [self.builder.nodes[scheme_id].properties for scheme_id in results]
+        return [self._scheme_payload(self.builder.nodes[scheme_id]) for scheme_id in results]
 
     def count_schemes_by_ministry(self) -> dict[str, int]:
         """Aggregation query: Count schemes per ministry."""
@@ -613,6 +617,11 @@ class HybridRetriever:
                         name=scheme_data.get("name", ""),
                         relevance_score=0.9,  # High confidence from structured matching
                         source="graph",
+                        metadata={
+                            "benefit_type": scheme_data.get("benefit_type"),
+                            "benefit_amount": scheme_data.get("benefit_amount"),
+                            "category": scheme_data.get("category", []),
+                        },
                     )
                 )
 
@@ -642,6 +651,11 @@ class HybridRetriever:
                                 name=node.properties.get("name", ""),
                                 relevance_score=score,
                                 source="bm25",
+                                metadata={
+                                    "benefit_type": node.properties.get("benefit_type"),
+                                    "benefit_amount": node.properties.get("benefit_amount"),
+                                    "category": node.properties.get("category", []),
+                                },
                             )
                         )
 
@@ -684,7 +698,10 @@ class HybridRetriever:
             name=r["results"].name,
             relevance_score=r["score"],
             source="hybrid_rrf",
-            metadata={"component_scores": {"vector": 0.3, "graph": 0.5, "bm25": 0.2}}
+            metadata={
+                **(r["results"].metadata or {}),
+                "component_scores": {"vector": 0.3, "graph": 0.5, "bm25": 0.2},
+            }
         ) for r in sorted_results]
 
     def _cross_encoder_rerank(

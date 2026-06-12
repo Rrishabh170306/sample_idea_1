@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from langgraph.graph import StateGraph, START, END
 
+from app.agents.dependencies import create_graph_orchestrator, create_profile_crud, create_retriever
 from app.agents.state import AgentState
 from app.agents.classifier import QueryClassifier
 from app.agents.profile import ProfileAgent
@@ -14,16 +16,22 @@ from app.agents.document import DocumentAgent
 from app.agents.verification import VerificationAgent
 from app.agents.citation import CitationAgent
 from app.agents.response import ResponseAgent
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 class Orchestrator:
     def __init__(self):
+        settings = get_settings()
+        graph_orchestrator = create_graph_orchestrator()
+        profile_crud = create_profile_crud(settings)
+        retriever = create_retriever(settings, graph_orchestrator)
+
         self.classifier = QueryClassifier()
-        self.profile = ProfileAgent()
+        self.profile = ProfileAgent(profile_crud=profile_crud)
         self.eligibility = EligibilityAgent()
-        self.retrieval = RetrievalAgent()
-        self.graph = GraphAgent()
+        self.retrieval = RetrievalAgent(hybrid_retriever=retriever)
+        self.graph = GraphAgent(graph_orchestrator=graph_orchestrator)
         self.document = DocumentAgent()
         self.verification = VerificationAgent()
         self.citation = CitationAgent()
@@ -53,19 +61,28 @@ class Orchestrator:
                 return "profile"
             elif q_type == "document":
                 return "document"
-            else: # comparison, application, general, reasoning
-                return "retrieval"
+            else:  # comparison, application, general, reasoning
+                return "profile"
                 
         builder.add_conditional_edges("classifier", route_query, {
             "profile": "profile",
             "document": "document",
-            "retrieval": "retrieval"
         })
         
+        # Profile-driven routing
+        def route_profile(state: AgentState):
+            if state.get("query_type") == "eligibility":
+                return "eligibility"
+            return "retrieval"
+
+        builder.add_conditional_edges("profile", route_profile, {
+            "eligibility": "eligibility",
+            "retrieval": "retrieval",
+        })
+
         # Eligibility flow
-        builder.add_edge("profile", "eligibility")
         builder.add_edge("eligibility", "graph")
-        
+
         # Retrieval flow
         builder.add_edge("retrieval", "graph")
         
@@ -91,6 +108,9 @@ class Orchestrator:
         
         return builder.compile()
 
-    def run(self, state: AgentState) -> AgentState:
+    async def arun(self, state: AgentState) -> AgentState:
         graph = self.build_graph()
-        return graph.invoke(state)
+        return await graph.ainvoke(state)
+
+    def run(self, state: AgentState) -> AgentState:
+        return asyncio.run(self.arun(state))

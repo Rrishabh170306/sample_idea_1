@@ -1,27 +1,25 @@
 "use client";
 
 import { useRouter } from 'next/navigation';
+import { signIn, useSession } from 'next-auth/react';
 import * as React from 'react';
-import { createEmptySession, saveSession } from './session';
 
 export function AuthPanel() {
   const router = useRouter();
+  const { status } = useSession();
   const [isLoading, setIsLoading] = React.useState(false);
 
-  const handleLogin = () => {
+  React.useEffect(() => {
+    if (status === 'authenticated') {
+      router.replace('/profile');
+    }
+  }, [router, status]);
+
+  const handleLogin = async () => {
     setIsLoading(true);
 
-    const nextSession = {
-      ...createEmptySession(),
-      authenticated: true,
-      email: 'user@gmail.com',
-    };
-
-    saveSession(nextSession);
-
-    window.setTimeout(() => {
-      router.push('/profile');
-    }, 450);
+    await signIn('google', { redirectTo: '/profile' });
+    setIsLoading(false);
   };
 
   return (
@@ -29,8 +27,7 @@ export function AuthPanel() {
       <p className="eyebrow">Google login</p>
       <h1 className="page-title">Continue with Google</h1>
       <p className="page-copy">
-        This prototype routes you into profile onboarding after sign-in. The real Google account chooser requires a
-        configured OAuth client and redirect URI.
+        Sign in with your Google account to continue to profile onboarding.
       </p>
 
       <div className="action-row">

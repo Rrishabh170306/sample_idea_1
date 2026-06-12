@@ -1,16 +1,13 @@
 "use client";
 
 import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import * as React from 'react';
-import { loadSession, saveSession } from './session';
+import { sendChatMessage } from '@/lib/chat/service';
+import type { FrontendChatMessage } from '@/lib/chat/types';
+import { isProfileComplete, loadSession, saveSession } from './session';
 
-type ChatMessage = {
-  role: 'user' | 'assistant';
-  text: string;
-  meta?: string;
-};
-
-const starterMessages: ChatMessage[] = [
+const starterMessages: FrontendChatMessage[] = [
   {
     role: 'assistant',
     text: 'I can help you find Indian welfare schemes based on your profile, documents, and questions.',
@@ -19,13 +16,17 @@ const starterMessages: ChatMessage[] = [
 ];
 
 export function ChatTemplate() {
+  const { data: authSession, status } = useSession();
   const [session, setSession] = React.useState(() => loadSession());
-  const [messages, setMessages] = React.useState<ChatMessage[]>(starterMessages);
+  const [messages, setMessages] = React.useState<FrontendChatMessage[]>(starterMessages);
   const [draft, setDraft] = React.useState('What schemes am I eligible for?');
   const [selectedFiles, setSelectedFiles] = React.useState<string[]>([]);
   const [language, setLanguage] = React.useState(session.language || 'English');
   const [voiceEnabled, setVoiceEnabled] = React.useState(session.voiceEnabled);
   const [isSending, setIsSending] = React.useState(false);
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [retryMessage, setRetryMessage] = React.useState<string | null>(null);
+  const sessionIdRef = React.useRef<string>(crypto.randomUUID());
 
   React.useEffect(() => {
     setSession(loadSession());
@@ -35,30 +36,45 @@ export function ChatTemplate() {
     saveSession({ ...session, language, voiceEnabled });
   }, [language, session, voiceEnabled]);
 
-  const sendMessage = () => {
-    const trimmed = draft.trim();
+  const sendMessage = async (messageOverride?: string, reuseExistingUserMessage = false) => {
+    const trimmed = (messageOverride ?? draft).trim();
     if (!trimmed) {
       return;
     }
 
     setIsSending(true);
-    setMessages((current) => [...current, { role: 'user', text: trimmed }]);
+    setErrorMessage(null);
+    setRetryMessage(null);
+
+    if (!reuseExistingUserMessage) {
+      setMessages((current) => [...current, { role: 'user', text: trimmed }]);
+    }
     setDraft('');
 
-    window.setTimeout(() => {
+    try {
+      const result = await sendChatMessage({
+        message: trimmed,
+        sessionId: sessionIdRef.current,
+        userEmail: authSession?.user?.email,
+      });
       const fileNote = selectedFiles.length ? ` I have noted ${selectedFiles.length} uploaded document(s).` : '';
       setMessages((current) => [
         ...current,
         {
           role: 'assistant',
-          text:
-            'Based on your profile details, I can shortlist likely schemes and explain the required documents. Ask me to compare two schemes or upload Aadhaar / ration card here.' +
-            fileNote,
-          meta: 'Chatbot prototype response',
+          text: `${result.text}${fileNote}`,
+          meta: result.meta,
         },
       ]);
+      if (result.sessionId) {
+        sessionIdRef.current = result.sessionId;
+      }
+    } catch {
+      setErrorMessage('Could not reach the chat service. Please try again.');
+      setRetryMessage(trimmed);
+    } finally {
       setIsSending(false);
-    }, 700);
+    }
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -74,7 +90,8 @@ export function ChatTemplate() {
           <h2 className="chat-title">Welfare schemes, directly through conversation</h2>
         </div>
         <div className="pill-row">
-          <span className="pill">Profile: {session.authenticated ? 'Ready' : 'Pending'}</span>
+          <span className="pill">Profile: {isProfileComplete(session) ? 'Ready' : 'Pending'}</span>
+          <span className="pill">Auth: {status === 'authenticated' ? 'Signed in' : 'Guest'}</span>
           <span className="pill">Voice: {voiceEnabled ? 'On' : 'Off'}</span>
           <span className="pill">Lang: {language}</span>
         </div>
@@ -108,7 +125,7 @@ export function ChatTemplate() {
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
-              sendMessage();
+              void sendMessage();
             }
           }}
         />
@@ -138,10 +155,19 @@ export function ChatTemplate() {
           </button>
         </div>
 
-        <button type="button" className="primary-button send-button" onClick={sendMessage} disabled={isSending}>
-          {isSending ? 'Sending…' : 'Send'}
+        <button type="button" className="primary-button send-button" onClick={() => void sendMessage()} disabled={isSending}>
+          {isSending ? 'Sending...' : 'Send'}
         </button>
       </div>
+
+      {errorMessage ? <p className="helper-text">{errorMessage}</p> : null}
+      {retryMessage ? (
+        <div className="action-row">
+          <button type="button" className="btn" onClick={() => void sendMessage(retryMessage, true)} disabled={isSending}>
+            Retry
+          </button>
+        </div>
+      ) : null}
 
       <p className="helper-text">
         <Link href="/auth">Login</Link> first, then complete your profile for better eligibility results.

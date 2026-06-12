@@ -28,6 +28,13 @@ class RetrievalAgent:
         if not query:
             return {"retrieved_chunks": []}
 
+        if self.retriever is None:
+            return {
+                "retrieved_chunks": [],
+                "error_code": "retriever_not_configured",
+                "error_message": "No retriever dependency was injected.",
+            }
+
         start = time.time()
         attempt = 0
         last_error = None
@@ -35,20 +42,14 @@ class RetrievalAgent:
         while attempt < self.max_retries:
             attempt += 1
             try:
-                if self.retriever:
-                    # Use asyncio timeout to avoid hanging retrievals
-                    hits = await asyncio.wait_for(
-                        self.retriever.retrieve(query, user_profile=profile),
-                        timeout=self.timeout_seconds,
-                    )
-                    chunks = [
-                        {"content": getattr(h, "content", ""), "score": float(getattr(h, "score", 0.0)), "metadata": getattr(h, "metadata", {})}
-                        for h in hits
-                    ]
-                else:
-                    chunks = [
-                        {"content": "Mock retrieved content for query: " + query, "score": 0.0, "metadata": {"source": "mock"}}
-                    ]
+                hits = await asyncio.wait_for(
+                    self.retriever.retrieve(query, user_profile=profile),
+                    timeout=self.timeout_seconds,
+                )
+                chunks = [
+                    {"content": getattr(h, "content", ""), "score": float(getattr(h, "score", 0.0)), "metadata": getattr(h, "metadata", {})}
+                    for h in hits
+                ]
 
                 latency = round(time.time() - start, 3)
                 if REQUEST_COUNTER:

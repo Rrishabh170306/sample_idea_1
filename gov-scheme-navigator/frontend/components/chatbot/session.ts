@@ -1,35 +1,12 @@
-export type SchemeSathiSession = {
-  authenticated: boolean;
-  email: string;
-  fullName: string;
-  dob: string;
-  address: string;
-  city: string;
-  pinCode: string;
-  income: string;
-  background: 'rural' | 'urban' | '';
-  educationBackground: string;
-  language: string;
-  voiceEnabled: boolean;
-};
+import { createEmptyProfileValues } from '@/lib/profile/adapter';
+import type { ProfileFormValues } from '@/lib/profile/types';
+
+export type SchemeSathiSession = ProfileFormValues;
 
 const STORAGE_KEY = 'schemesathi.session';
 
 export function createEmptySession(): SchemeSathiSession {
-  return {
-    authenticated: false,
-    email: '',
-    fullName: '',
-    dob: '',
-    address: '',
-    city: '',
-    pinCode: '',
-    income: '',
-    background: '',
-    educationBackground: '',
-    language: 'English',
-    voiceEnabled: false,
-  };
+  return createEmptyProfileValues();
 }
 
 export function loadSession(): SchemeSathiSession {
@@ -70,8 +47,7 @@ export function updateSession(patch: Partial<SchemeSathiSession>) {
 
 export function isProfileComplete(session: SchemeSathiSession) {
   return Boolean(
-    session.authenticated &&
-      session.fullName &&
+    session.fullName &&
       session.dob &&
       session.address &&
       session.city &&

@@ -19,17 +19,28 @@ class GraphAgent:
         if not query:
             return {"graph_results": []}
 
+        if self.graph_orchestrator is None:
+            return {
+                "graph_results": [],
+                "error_code": "graph_not_configured",
+                "error": "No graph orchestrator dependency was injected.",
+            }
+
         try:
-            if self.graph_orchestrator:
-                results = await asyncio.wait_for(
-                    self.graph_orchestrator.hybrid_search(query=query, user_profile=profile, top_k=5),
-                    timeout=self.timeout_seconds,
-                )
-                results_dict = [
-                    {"score": float(getattr(r, "score", 1.0)), "node": getattr(r, "node", None)} for r in results
-                ]
-            else:
-                results_dict = [{"node": "Mock Graph Node", "relationship": "MOCK_REL", "score": 1.0}]
+            results = await asyncio.wait_for(
+                self.graph_orchestrator.hybrid_search(query=query, user_profile=profile, top_k=5),
+                timeout=self.timeout_seconds,
+            )
+            results_dict = [
+                {
+                    "scheme_id": getattr(r, "scheme_id", ""),
+                    "name": getattr(r, "name", ""),
+                    "source": getattr(r, "source", "graph"),
+                    "score": float(getattr(r, "relevance_score", getattr(r, "score", 1.0))),
+                    "metadata": getattr(r, "metadata", {}) or {},
+                }
+                for r in results
+            ]
 
             return {"graph_results": results_dict}
 

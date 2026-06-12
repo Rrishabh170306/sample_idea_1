@@ -28,7 +28,9 @@ class Settings:
     environment: str = field(default_factory=lambda: os.getenv("APP_ENV", "development"))
     api_prefix: str = field(default_factory=lambda: os.getenv("API_PREFIX", "/api/v1"))
     cors_origins: list[str] = field(
-        default_factory=lambda: _split_csv(os.getenv("CORS_ORIGINS", "*")) or ["*"]
+        default_factory=lambda: _split_csv(
+            os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+        ) or ["http://localhost:3000", "http://127.0.0.1:3000"]
     )
     # Database URL should be provided via environment variable; keep empty if unset
     database_url: str = field(
@@ -48,6 +50,9 @@ class Settings:
     )
     llm_api_url: str | None = field(default_factory=lambda: os.getenv("LLM_API_URL", None))
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-pro"))
+    profile_store_path: str = field(
+        default_factory=lambda: os.getenv("PROFILE_STORE_PATH", "data/profiles.json")
+    )
     # If >0 the scraper runner will repeat every N seconds; 0 (default) runs once
     scrape_interval_seconds: int = field(default_factory=lambda: int(os.getenv("SCRAPE_INTERVAL_SECONDS", "0") or 0))
 

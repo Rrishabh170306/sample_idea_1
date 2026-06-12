@@ -1,6 +1,7 @@
 pyproject.toml
 app/__init__.py
 app/main.py
+app/profile_store.py
 app/schemas.py
 app/agents/__init__.py
 app/agents/citation.py
@@ -59,6 +60,7 @@ app/scraping/__init__.py
 app/scraping/change_detector.py
 app/scraping/middlewares.py
 app/scraping/pipelines.py
+app/scraping/runner.py
 app/scraping/extractors/__init__.py
 app/scraping/extractors/schemas.py
 app/scraping/extractors/scheme_extractor.py
