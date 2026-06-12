@@ -5,7 +5,11 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
 
-import redis
+try:
+    import redis.asyncio as aioredis
+except Exception:  # pragma: no cover - optional dependency
+    aioredis = None
+
 from playwright.async_api import async_playwright, Page, Browser
 from pydantic import ValidationError
 
@@ -37,11 +41,14 @@ class MySchemeSpider:
     TIMEOUT = 30000  # milliseconds
 
     def __init__(self):
-        # Prefer a redis URL when available
+        # Prefer an async redis client when available; otherwise let ChangeDetector create one
         try:
-            self.redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+            if aioredis:
+                self.redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+            else:
+                self.redis_client = None
         except Exception:
-            self.redis_client = redis.Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+            self.redis_client = None
 
         self.change_detector = ChangeDetector(redis_client=self.redis_client)
         self.extractor = SchemeExtractor()
@@ -115,7 +122,7 @@ class MySchemeSpider:
             content = await page.content()
 
             # Change detection (uses ChangeDetector for canonicalization and atomic updates)
-            change_result = self.change_detector.has_changed(url, content)
+            change_result = await self.change_detector.has_changed(url, content)
             if not change_result.changed:
                 logger.info("No changes detected for %s (hash=%s)", url, change_result.new_hash[:8])
                 return None
@@ -156,14 +163,14 @@ class MySchemeSpider:
             if page:
                 await page.close()
 
-    def _check_change_detection(self, url: str, content: str) -> bool:
+    async def _check_change_detection(self, url: str, content: str) -> bool:
         """
         Check if page content has changed using hash comparison.
         Updates Redis with new hash and timestamp.
         """
         # Legacy helper retained for backward compatibility
         try:
-            result = self.change_detector.has_changed(url, content)
+            result = await self.change_detector.has_changed(url, content)
             return result.changed
         except Exception:
             logger.exception("Change detection failed for %s, assuming changed to force reprocess.", url)

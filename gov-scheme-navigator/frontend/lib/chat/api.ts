@@ -2,11 +2,18 @@ import type { ChatRequest, ChatResponse } from './types';
 
 const DEFAULT_API_BASE_URL = 'http://localhost:8000';
 
-function getApiBaseUrl() {
-  return process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
+function getApiBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    return process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
+  }
+  // Server-side: use internal Docker network URL
+  return process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 }
 
-export async function postChatMessage(payload: ChatRequest, userEmail?: string | null): Promise<ChatResponse> {
+export async function postChatMessage(
+  payload: ChatRequest,
+  userEmail?: string | null,
+): Promise<ChatResponse> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -22,8 +29,15 @@ export async function postChatMessage(payload: ChatRequest, userEmail?: string |
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Chat request failed with status ${response.status}`);
+    let detail = `Chat request failed with status ${response.status}`;
+    try {
+      const body = await response.json();
+      detail = body?.detail || detail;
+    } catch {
+      const text = await response.text().catch(() => '');
+      if (text) detail = text;
+    }
+    throw new Error(detail);
   }
 
   return response.json() as Promise<ChatResponse>;

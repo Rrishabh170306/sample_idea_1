@@ -5,7 +5,7 @@ import logging
 
 from langgraph.graph import StateGraph, START, END
 
-from app.agents.dependencies import create_graph_orchestrator, create_profile_crud, create_retriever
+from app.agents.dependencies import get_graph_orchestrator, create_profile_crud, create_retriever
 from app.agents.state import AgentState
 from app.agents.classifier import QueryClassifier
 from app.agents.profile import ProfileAgent
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     def __init__(self):
         settings = get_settings()
-        graph_orchestrator = create_graph_orchestrator()
+        graph_orchestrator = get_graph_orchestrator()
         profile_crud = create_profile_crud(settings)
         retriever = create_retriever(settings, graph_orchestrator)
 

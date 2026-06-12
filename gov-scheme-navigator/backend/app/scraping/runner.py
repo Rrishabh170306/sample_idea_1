@@ -69,7 +69,7 @@ async def process_url(
     try:
         content = await fetch_content(url)
 
-        change = detector.has_changed(url, content)
+        change = await detector.has_changed(url, content)
         if not change.changed:
             logger.info("No change detected for %s — skipping ingestion", url)
             return
@@ -80,6 +80,18 @@ async def process_url(
 
         # Normalize
         normalized = normalize.process_item(scheme)
+
+        # Store in DB
+        try:
+            from app.db.session import get_session_factory
+            from app.scraping.pipelines import StoragePipeline
+            session_factory = get_session_factory()
+            if session_factory:
+                async with session_factory() as db_session:
+                    storage = StoragePipeline(db_session=db_session, embedding_service=embedder)
+                    await storage.process_item(normalized)
+        except Exception as exc:
+            logger.warning("DB storage failed, continuing with graph/vector ingestion: %s", exc)
 
         # Chunk
         chunks = chunker.chunk_parent_child(content)
@@ -197,6 +209,41 @@ async def main() -> None:
     else:
         # Single-run mode
         await run_once()
+
+
+class ScrapingRunner:
+    """Callable wrapper for use from admin trigger or external code."""
+
+    async def run(self, urls: list[str] | None = None) -> None:
+        """Run the full scraping pipeline.
+
+        Args:
+            urls: Optional explicit list of URLs to scrape.
+                  If None, uses the default spider start_urls.
+        """
+        if urls:
+            # Run only the specified URLs
+            extractor = SchemeExtractor()
+            normalize = NormalizeItemPipeline()
+            detector = ChangeDetector()
+            chunker = Chunker()
+            embedder = EmbeddingService()
+            dsn = _to_async_dsn(getattr(settings, "database_url", ""))
+            vector_store = VectorStore(dsn)
+            graph_ingestor = GraphIngestor()
+
+            sem = asyncio.Semaphore(4)
+
+            async def sem_task(u: str):
+                async with sem:
+                    await process_url(u, extractor, normalize, detector, chunker,
+                                      embedder, vector_store, graph_ingestor)
+
+            tasks = [asyncio.create_task(sem_task(u)) for u in urls]
+            if tasks:
+                await asyncio.gather(*tasks)
+        else:
+            await main()
 
 
 if __name__ == "__main__":

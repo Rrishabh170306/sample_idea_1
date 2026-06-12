@@ -7,9 +7,9 @@ export async function sendChatMessage(input: ChatServiceInput): Promise<ChatServ
     {
       message: input.message,
       session_id: input.sessionId,
+      user_profile: input.userProfile,
     },
     input.userEmail,
   );
-
   return mapChatResponseToMessage(response);
 }

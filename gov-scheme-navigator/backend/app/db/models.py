@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String, Text, func
 from sqlalchemy.dialects.postgresql import TSVECTOR
@@ -27,10 +26,14 @@ class Scheme(Base):
     documents_required = Column(JSON, nullable=True)
     application_process = Column(JSON, nullable=True)
     official_url = Column(String(500), nullable=True)
+    # source_url is where the page was scraped from (may differ from official_url)
+    source_url = Column(String(500), nullable=True)
     deadline = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(32), nullable=False, default="active")
     last_updated = Column(DateTime(timezone=True), nullable=True)
     content_hash = Column(String(128), nullable=True)
+    confidence_score = Column(Float, nullable=True, default=0.0)
+    crawled_at = Column(String(64), nullable=True)  # ISO datetime string
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -79,6 +82,7 @@ class UserSession(Base):
     messages = Column(JSON, nullable=True)
     context = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class ReviewQueue(Base):

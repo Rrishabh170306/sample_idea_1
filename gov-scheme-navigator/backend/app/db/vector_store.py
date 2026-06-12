@@ -3,15 +3,26 @@ from __future__ import annotations
 import uuid
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import select, func, text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+try:
+    from sqlalchemy import select, func, text
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
+    _HAS_SQLALCHEMY = True
+except Exception:
+    # Allow importing this module in lightweight test environments without sqlalchemy.
+    select = func = text = None  # type: ignore
+    AsyncSession = object  # type: ignore
+    create_async_engine = None
+    sessionmaker = None
+    _HAS_SQLALCHEMY = False
 
 from app.db.models import SchemeChunk
 
 
 class VectorStore:
     def __init__(self, dsn: str) -> None:
+        if not _HAS_SQLALCHEMY:
+            raise RuntimeError("SQLAlchemy is not available in the current environment; VectorStore cannot be used.")
         self.dsn = dsn
         self.engine = create_async_engine(dsn, echo=False)
         self.SessionLocal = sessionmaker(

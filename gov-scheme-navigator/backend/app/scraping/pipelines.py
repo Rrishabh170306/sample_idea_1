@@ -188,11 +188,14 @@ class StoragePipeline:
             try:
                 content_for_hash = str(item.get("content") or item.get("name") or "").encode("utf-8")
                 if self.change_detector and item.get("official_url"):
-                    change_res = self.change_detector.has_changed(str(item.get("official_url")), content_for_hash)
-                    # Attach change metadata
-                    item["_change_detected"] = change_res.changed
-                    item["_old_hash"] = change_res.old_hash
-                    item["_new_hash"] = change_res.new_hash
+                    try:
+                        change_res = await self.change_detector.has_changed(str(item.get("official_url")), content_for_hash)
+                        # Attach change metadata
+                        item["_change_detected"] = change_res.changed
+                        item["_old_hash"] = change_res.old_hash
+                        item["_new_hash"] = change_res.new_hash
+                    except Exception:
+                        logger.debug("Change detection failed for item %s", item.get("scheme_id"), exc_info=True)
             except Exception:
                 logger.debug("Could not compute change detection for item %s", item.get("scheme_id"), exc_info=True)
 

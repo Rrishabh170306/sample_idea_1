@@ -1,154 +1,162 @@
 from __future__ import annotations
 
-import json
+from typing import Any, Dict, List, Optional
 import logging
-from typing import Optional
+import os
+import time
+
+import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-
-try:
-    import anthropic
-except Exception:
-    anthropic = None
-
 
 class LLMClient:
-    """Unified LLM client supporting Gemini, Anthropic (Claude), and HTTP endpoints."""
+    """OpenRouter-compatible LLM client (OpenAI-compatible API interface).
 
-    def __init__(self):
-        self.provider = (getattr(settings, "llm_provider", "") or "gemini").lower()
-        self.api_key = getattr(settings, "llm_api_key", None)
-        self.api_url = getattr(settings, "llm_api_url", None)
-        self.model = getattr(settings, "llm_model", None)
+    This replaces provider-specific integrations (Gemini/Anthropic) and
+    exposes the same `generate` (async) and `generate_sync` (sync) methods
+    used across the codebase.
+    """
 
-        self.client = None
+    def __init__(self) -> None:
+        # prefer explicit OPENROUTER_API_KEY, fall back to legacy LLM_API_KEY
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or getattr(settings, "llm_api_key", None)
+        self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.chat_path = f"{self.base_url.rstrip('/')}/chat/completions"
+        self.default_model = getattr(settings, "llm_model", "openai/gpt-5")
+        self.fallback_model = "openai/gpt-4.1"
+        self._timeout = float(os.getenv("OPENROUTER_TIMEOUT", "60"))
+        self._retries = int(os.getenv("OPENROUTER_RETRIES", "3"))
 
-        if self.provider == "gemini" and genai is not None and self.api_key:
-            try:
-                genai.configure(api_key=self.api_key)
-                self.client = genai.GenerativeModel(self.model or "gemini-pro")
-            except Exception:
-                logger.exception("Failed to initialize Gemini client")
+        if not self.api_key:
+            logger.warning("OPENROUTER_API_KEY not set; LLM calls will fail until configured")
 
-        if self.provider in ("anthropic", "claude") and anthropic is not None and self.api_key:
-            try:
-                # anthropic.Client may be sync-only; keep client for sync calls
-                self.client = anthropic.Client(api_key=self.api_key)
-            except Exception:
-                logger.exception("Failed to initialize Anthropic client")
+    async def generate(
+        self,
+        prompt: str | None = None,
+        *,
+        messages: Optional[List[Dict[str, str]]] = None,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Async generate using OpenRouter chat completions.
 
-    async def generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 512) -> str:
-        """Generate text from configured LLM.
-
-        Returns the textual output. Raises exceptions on failure.
+        Maintains compatibility with prior `generate(prompt)` callers by
+        converting single-string prompts into a single user message.
         """
-        # Gemini path (sync SDK) - call synchronously
-        if self.provider == "gemini" and self.client is not None:
-            resp = self.client.generate_content(
-                prompt,
-                generation_config={"temperature": temperature, "max_tokens": max_tokens},
-            )
-            return getattr(resp, "text", str(resp))
+        if messages is None:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
 
-        # Anthropic/Claude path (sync client) - run in thread
-        if self.provider in ("anthropic", "claude") and self.client is not None:
-            import asyncio
+        payload: Dict[str, Any] = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
 
-            def _call_anthropic():
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "http://localhost:3000"),
+            "X-OpenRouter-Title": os.getenv("OPENROUTER_TITLE", "AI Application"),
+        }
+
+        last_exc: Optional[Exception] = None
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            for attempt in range(1, self._retries + 1):
                 try:
-                    # Use the common completions API shape
-                    return self.client.completions.create(
-                        model=self.model or "claude-2.1",
-                        prompt=prompt,
-                        max_tokens_to_sample=max_tokens,
-                    )
-                except Exception as exc:
-                    logger.exception("Anthropic request failed: %s", exc)
+                    resp = await client.post(self.chat_path, json=payload, headers=headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    # expected shape: {"choices": [{"message": {"content": "..."}}]}
+                    choices = data.get("choices") or []
+                    if choices and isinstance(choices, list):
+                        msg = choices[0].get("message", {})
+                        return msg.get("content", "")
+                    # fallback to common fields
+                    if isinstance(data, dict):
+                        for key in ("output", "text", "response", "result", "content"):
+                            if key in data:
+                                return data[key]
+                    return str(data)
+                except Exception as exc:  # pylint: disable=broad-except
+                    last_exc = exc
+                    logger.warning("OpenRouter request failed (attempt %d/%d): %s", attempt, self._retries, exc)
+                    if attempt < self._retries:
+                        time.sleep(2 ** attempt)
+                        continue
                     raise
 
-            resp = await asyncio.to_thread(_call_anthropic)
-            if hasattr(resp, "completion"):
-                return resp.completion
-            if isinstance(resp, dict):
-                return resp.get("completion") or resp.get("text") or json.dumps(resp)
-            return str(resp)
+        raise last_exc or RuntimeError("OpenRouter request failed")
 
-        # HTTP fallback (self-hosted Claude or other compatible endpoints)
-        if self.api_url:
-            import httpx
+    def generate_sync(
+        self,
+        prompt: str | None = None,
+        *,
+        messages: Optional[List[Dict[str, str]]] = None,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Synchronous wrapper for generate.
 
-            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-            payload = {"prompt": prompt}
-            if self.model:
-                payload["model"] = self.model
+        Converts arguments into the OpenRouter chat completion payload and performs
+        a blocking HTTP request using `httpx`.
+        """
+        if messages is None:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(self.api_url, json=payload, headers=headers)
-                resp.raise_for_status()
+        payload: Dict[str, Any] = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "http://localhost:3000"),
+            "X-OpenRouter-Title": os.getenv("OPENROUTER_TITLE", "AI Application"),
+        }
+
+        last_exc: Optional[Exception] = None
+        with httpx.Client(timeout=self._timeout) as client:
+            for attempt in range(1, self._retries + 1):
                 try:
+                    resp = client.post(self.chat_path, json=payload, headers=headers)
+                    resp.raise_for_status()
                     data = resp.json()
+                    choices = data.get("choices") or []
+                    if choices and isinstance(choices, list):
+                        msg = choices[0].get("message", {})
+                        return msg.get("content", "")
                     if isinstance(data, dict):
                         for key in ("output", "text", "response", "result", "content"):
                             if key in data:
                                 return data[key]
-                        return json.dumps(data)
                     return str(data)
-                except Exception:
-                    return resp.text
+                except Exception as exc:  # pylint: disable=broad-except
+                    last_exc = exc
+                    logger.warning("OpenRouter sync request failed (attempt %d/%d): %s", attempt, self._retries, exc)
+                    if attempt < self._retries:
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise
 
-        raise RuntimeError("No LLM provider configured or client not initialized")
-
-    def generate_sync(self, prompt: str, temperature: float = 0.1, max_tokens: int = 512) -> str:
-        """Synchronous wrapper for `generate` for callers in sync contexts."""
-        # Gemini (sync): use client directly
-        if self.provider == "gemini" and self.client is not None:
-            resp = self.client.generate_content(
-                prompt,
-                generation_config={"temperature": temperature, "max_tokens": max_tokens},
-            )
-            return getattr(resp, "text", str(resp))
-
-        # Anthropic (sync client)
-        if self.provider in ("anthropic", "claude") and self.client is not None:
-            resp = self.client.completions.create(
-                model=self.model or "claude-2.1",
-                prompt=prompt,
-                max_tokens_to_sample=max_tokens,
-            )
-            if hasattr(resp, "completion"):
-                return resp.completion
-            if isinstance(resp, dict):
-                return resp.get("completion") or resp.get("text") or json.dumps(resp)
-            return str(resp)
-
-        # HTTP sync fallback
-        if self.api_url:
-            import httpx
-
-            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-            payload = {"prompt": prompt}
-            if self.model:
-                payload["model"] = self.model
-
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(self.api_url, json=payload, headers=headers)
-                resp.raise_for_status()
-                try:
-                    data = resp.json()
-                    if isinstance(data, dict):
-                        for key in ("output", "text", "response", "result", "content"):
-                            if key in data:
-                                return data[key]
-                        return json.dumps(data)
-                    return str(data)
-                except Exception:
-                    return resp.text
-
-        raise RuntimeError("No LLM provider configured or client not initialized")
+        raise last_exc or RuntimeError("OpenRouter request failed")

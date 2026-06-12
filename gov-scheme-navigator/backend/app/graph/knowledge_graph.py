@@ -6,6 +6,7 @@ Handles graph schema, relationships, GraphRAG queries, and hybrid search.
 from __future__ import annotations
 
 import logging
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -14,6 +15,17 @@ from uuid import uuid4
 
 
 logger = logging.getLogger(__name__)
+from app.core.config import settings
+# Expose optional components at module level so tests can patch them.
+try:
+    from app.rag.embedder import EmbeddingService
+except Exception:
+    EmbeddingService = None
+
+try:
+    from app.db.vector_store import VectorStore
+except Exception:
+    VectorStore = None
 
 
 # ============================================================================
@@ -427,15 +439,22 @@ class GraphQuery:
         results = []
 
         for node in self.builder.nodes.values():
-            if (node.node_type == NodeType.BENEFICIARY_TYPE and
-                node.properties.get("type").lower() == beneficiary_type.lower()):
-                # Find schemes eligible for this beneficiary
-                for rel in self.builder.relationships:
-                    if (rel.rel_type == RelationType.ELIGIBLE_FOR and
-                        rel.source_id == node.id):
-                        scheme_node = self.builder.nodes.get(rel.target_id)
-                        if scheme_node:
-                            results.append(self._scheme_payload(scheme_node))
+            if node.node_type == NodeType.BENEFICIARY_TYPE:
+                node_type_val = (node.properties.get("type") or "").lower()
+                target = (beneficiary_type or "").lower()
+
+                # Normalize simple plural/singular differences and substring matches
+                def _norm(x: str) -> str:
+                    return x.rstrip("s") if x.endswith("s") else x
+
+                if _norm(node_type_val) == _norm(target) or target in node_type_val or node_type_val in target:
+                    # Find schemes eligible for this beneficiary
+                    for rel in self.builder.relationships:
+                        if (rel.rel_type == RelationType.ELIGIBLE_FOR and
+                            rel.source_id == node.id):
+                            scheme_node = self.builder.nodes.get(rel.target_id)
+                            if scheme_node:
+                                results.append(self._scheme_payload(scheme_node))
 
         return results
 
@@ -574,28 +593,51 @@ class HybridRetriever:
         """Vector similarity search."""
         results = []
 
-        if not self.embedding_model:
-            logger.warning("Embedding model not available. Skipping vector search.")
-            return results
-
         try:
-            # Embed query (embedding step omitted in this mock implementation)
-            # Compare with scheme embeddings (mock for now)
-            for node in self.builder.nodes.values():
-                if node.node_type == NodeType.SCHEME:
-                    # Mock similarity score
-                    similarity = 0.7  # Would compute actual similarity here
-                    results.append(
-                        SearchResult(
-                            scheme_id=node.id,
-                            name=node.properties.get("name", ""),
-                            relevance_score=similarity,
-                            source="vector",
-                        )
+            # Use module-level VectorStore, EmbeddingService, settings, and asyncio
+            if not getattr(settings, "database_url", None):
+                logger.warning("Database URL not set. Skipping real vector search.")
+                return results
+
+            embedder = self.embedding_model or EmbeddingService()
+
+            dsn = settings.database_url
+            if "postgresql" in dsn and "asyncpg" not in dsn:
+                dsn = dsn.replace("postgresql://", "postgresql+asyncpg://").replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+
+            vector_store = VectorStore(dsn)
+
+            if hasattr(embedder, "embed_query"):
+                embedding = await asyncio.to_thread(embedder.embed_query, query)
+            elif hasattr(embedder, "embed_texts"):
+                # fallback if only embed_texts is implemented
+                embedding = await asyncio.to_thread(lambda: embedder.embed_texts([query])[0])
+            else:
+                logger.warning("Embedder has no known method to embed query")
+                return results
+
+            vector_hits = await vector_store.vector_search(embedding, top_k=5)
+
+            for hit in vector_hits:
+                scheme_id = hit.get("scheme_id")
+                name = hit.get("metadata", {}).get("name", "Unknown Scheme")
+                
+                # Try to get the name from the in-memory graph if not in metadata
+                if name == "Unknown Scheme" and scheme_id in self.builder.nodes:
+                    name = self.builder.nodes[scheme_id].properties.get("name", "Unknown Scheme")
+
+                results.append(
+                    SearchResult(
+                        scheme_id=scheme_id,
+                        name=name,
+                        relevance_score=hit.get("score", 0.0),
+                        source="vector",
+                        metadata=hit.get("metadata", {})
                     )
+                )
 
         except Exception as e:
-            logger.error(f"Vector search error: {e}")
+            logger.warning(f"Vector search failed (fallback to empty list): {e}")
 
         return results
 

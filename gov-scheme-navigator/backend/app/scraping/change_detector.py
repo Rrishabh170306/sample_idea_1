@@ -49,19 +49,19 @@ class ChangeDetector:
     - Returns a `ChangeCheckResult` for richer information.
     """
 
-    def __init__(self, redis_client: Optional[redis.Redis] = None):
+    def __init__(self, redis_client: Optional[redis.asyncio.Redis] = None):
         try:
             # Prefer a full redis URL when available
-            self.redis = redis_client or redis.from_url(settings.redis_url, decode_responses=True)
+            self.redis = redis_client or redis.asyncio.from_url(settings.redis_url, decode_responses=True)
         except Exception:
             # Fallback to host/port for legacy environments
-            self.redis = redis_client or redis.Redis(
+            self.redis = redis_client or redis.asyncio.Redis(
                 host=getattr(settings, "redis_host", "localhost"),
                 port=getattr(settings, "redis_port", 6379),
                 decode_responses=True,
             )
 
-    def has_changed(self, url: str, content: Union[str, bytes]) -> ChangeCheckResult:
+    async def has_changed(self, url: str, content: Union[str, bytes]) -> ChangeCheckResult:
         """Compute content hash and atomically update Redis if changed.
 
         Returns a `ChangeCheckResult` with old and new hashes and the timestamp.
@@ -72,14 +72,14 @@ class ChangeDetector:
         crawled_key = f"page_crawled_at:{canonical}"
 
         try:
-            old_hash = self.redis.get(hash_key)
+            old_hash = await self.redis.get(hash_key)
 
             if new_hash != old_hash:
                 # Update cache (TTL 30 days)
                 pipeline = self.redis.pipeline()
                 pipeline.set(hash_key, new_hash, ex=86400 * 30)
                 pipeline.set(crawled_key, datetime.utcnow().isoformat(), ex=86400 * 30)
-                pipeline.execute()
+                await pipeline.execute()
                 logger.info("Change detected for %s", canonical)
                 return ChangeCheckResult(True, old_hash, new_hash, datetime.utcnow())
 
@@ -90,22 +90,22 @@ class ChangeDetector:
             # On Redis errors, return conservative result (treat as unchanged)
             return ChangeCheckResult(False, None, new_hash, datetime.utcnow())
 
-    def get_last_crawled(self, url: str) -> Optional[datetime]:
+    async def get_last_crawled(self, url: str) -> Optional[datetime]:
         """Get timestamp of last successful crawl for a URL.
 
         Returns None if unknown or on error.
         """
         try:
-            timestamp_str = self.redis.get(f"page_crawled_at:{_canonicalize_url(url)}")
+            timestamp_str = await self.redis.get(f"page_crawled_at:{_canonicalize_url(url)}")
             if timestamp_str:
                 return datetime.fromisoformat(timestamp_str)
         except Exception:
             logger.exception("Failed to read last crawled timestamp for %s", url)
         return None
 
-    def needs_refresh(self, url: str, hours_threshold: int = 24) -> bool:
+    async def needs_refresh(self, url: str, hours_threshold: int = 24) -> bool:
         """Check if URL needs refreshing based on last crawl age."""
-        last_crawled = self.get_last_crawled(url)
+        last_crawled = await self.get_last_crawled(url)
         if not last_crawled:
             return True
 
@@ -133,12 +133,12 @@ class FreshnessMonitor:
     PRIORITY_REFRESH_HOURS = 24  # 1 day
 
     def __init__(
-        self, db_session: AsyncSession, redis_client: Optional[redis.Redis] = None
+        self, db_session: AsyncSession, redis_client: Optional[redis.asyncio.Redis] = None
     ):
         self.db = db_session
         self.change_detector = ChangeDetector(redis_client)
         # Use the parsed redis host/port from settings (backwards compatible)
-        self.redis = redis_client or redis.Redis(
+        self.redis = redis_client or redis.asyncio.Redis(
             host=getattr(settings, "redis_host", getattr(settings, "REDIS_HOST", "localhost")),
             port=getattr(settings, "redis_port", getattr(settings, "REDIS_PORT", 6379)),
             decode_responses=True,
@@ -155,7 +155,8 @@ class FreshnessMonitor:
             is_priority = any(p in scheme.scheme_id for p in self.PRIORITY_SCHEMES)
             refresh_hours = self.PRIORITY_REFRESH_HOURS if is_priority else self.STANDARD_REFRESH_HOURS
 
-            if self.change_detector.needs_refresh(scheme.official_url, hours_threshold=refresh_hours):
+            needs_refresh = await self.change_detector.needs_refresh(scheme.official_url, hours_threshold=refresh_hours)
+            if needs_refresh:
                 schemes_to_refresh.append({
                     "scheme_id": scheme.scheme_id,
                     "url": scheme.official_url,
@@ -176,14 +177,14 @@ class FreshnessMonitor:
             await self.db.commit()
             logger.info("Updated freshness for %s", scheme_id)
 
-    def get_freshness_stats(self, url: str) -> dict[str, object]:
+    async def get_freshness_stats(self, url: str) -> dict[str, object]:
         """Return freshness stats for a URL: last crawled, age hours and needs_refresh."""
-        last_crawled = self.change_detector.get_last_crawled(url)
+        last_crawled = await self.change_detector.get_last_crawled(url)
         if not last_crawled:
             return {"url": url, "last_crawled": None, "age_hours": None, "needs_refresh": True}
 
         age_hours = (datetime.utcnow() - last_crawled).total_seconds() / 3600
-        needs_refresh = self.change_detector.needs_refresh(url)
+        needs_refresh = await self.change_detector.needs_refresh(url)
 
         return {
             "url": url,

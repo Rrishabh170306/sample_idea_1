@@ -493,3 +493,221 @@ a {
     font-size: 16px;
   }
 }
+
+/* ── Scheme Cards ─────────────────────────────────────────────────────────── */
+.scheme-results {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.scheme-results-heading {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.scheme-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #f8fbff;
+  display: grid;
+  gap: 8px;
+}
+
+.scheme-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.scheme-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary);
+  line-height: 1.3;
+}
+
+.eligibility-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.eligibility-badge.eligible {
+  background: var(--accent-soft);
+  color: #115e59;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+}
+
+.eligibility-badge.not-eligible {
+  background: #fef2f2;
+  color: #b42318;
+  border: 1px solid rgba(180, 35, 24, 0.2);
+}
+
+.scheme-explanation {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted-strong);
+  line-height: 1.5;
+}
+
+.scheme-score-bar {
+  position: relative;
+  height: 6px;
+  background: var(--border-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.scheme-score-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, #34d399 100%);
+  border-radius: 999px;
+  transition: width 400ms ease;
+}
+
+.scheme-score-label {
+  position: absolute;
+  right: 0;
+  top: -18px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.scheme-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.scheme-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Citations ────────────────────────────────────────────────────────────── */
+.citation-list {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.citation-label {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.citation-list ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 2px;
+}
+
+.citation-list li {
+  font-size: 12px;
+}
+
+.citation-link {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+/* ── Starter Prompts ──────────────────────────────────────────────────────── */
+.starter-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.prompt-chip {
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted-strong);
+  border-radius: 999px;
+  padding: 6px 12px;
+  transition: border-color 140ms, color 140ms, background 140ms;
+}
+
+.prompt-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ── Typing indicator ────────────────────────────────────────────────────── */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 18px;
+  width: fit-content;
+}
+
+.typing-indicator span {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: var(--muted);
+  border-radius: 50%;
+  animation: bounce 1.2s infinite;
+}
+
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+  40%           { transform: translateY(-6px); opacity: 1; }
+}
+
+/* ── Error Banner ─────────────────────────────────────────────────────────── */
+.error-banner {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--error-soft);
+  border: 1px solid rgba(180, 35, 24, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.error-banner p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--error);
+  line-height: 1.4;
+}
+
+/* ── Message text ─────────────────────────────────────────────────────────── */
+.message-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

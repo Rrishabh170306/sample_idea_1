@@ -46,10 +46,10 @@ class Settings:
     # Generic LLM configuration (supports Gemini, Claude, or self-hosted endpoints)
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", os.getenv("LLM", "gemini")))
     llm_api_key: str | None = field(
-        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("CLAUDE_API_KEY")
+        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("CLAUDE_API_KEY")
     )
     llm_api_url: str | None = field(default_factory=lambda: os.getenv("LLM_API_URL", None))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-pro"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-5"))
     profile_store_path: str = field(
         default_factory=lambda: os.getenv("PROFILE_STORE_PATH", "data/profiles.json")
     )
