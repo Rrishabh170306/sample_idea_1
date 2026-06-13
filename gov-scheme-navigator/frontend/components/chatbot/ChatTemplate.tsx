@@ -1,25 +1,23 @@
 "use client";
 
-import Link from 'next/link';
+import { Mic, Paperclip, SendHorizontal, X } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import * as React from 'react';
 import { sendChatMessage } from '@/lib/chat/service';
 import type { FrontendChatMessage } from '@/lib/chat/types';
 import { isProfileComplete, loadSession, saveSession } from './session';
 
-const starterMessages: FrontendChatMessage[] = [
-  {
-    role: 'assistant',
-    text: 'I can help you find Indian welfare schemes based on your profile, documents, and questions.',
-    meta: 'Grounded on your saved profile',
-  },
+const suggestedPrompts = [
+  'What schemes am I eligible for?',
+  'Compare PM-KISAN and Kisan Credit Card',
+  'What documents do I need?',
 ];
 
 export function ChatTemplate() {
   const { data: authSession, status } = useSession();
   const [session, setSession] = React.useState(() => loadSession());
-  const [messages, setMessages] = React.useState<FrontendChatMessage[]>(starterMessages);
-  const [draft, setDraft] = React.useState('What schemes am I eligible for?');
+  const [messages, setMessages] = React.useState<FrontendChatMessage[]>([]);
+  const [draft, setDraft] = React.useState('');
   const [selectedFiles, setSelectedFiles] = React.useState<string[]>([]);
   const [language, setLanguage] = React.useState(session.language || 'English');
   const [voiceEnabled, setVoiceEnabled] = React.useState(session.voiceEnabled);
@@ -80,98 +78,113 @@ export function ChatTemplate() {
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []).map((file) => file.name);
     setSelectedFiles((current) => [...current, ...files]);
+    event.target.value = '';
+  };
+
+  const removeFile = (fileName: string) => {
+    setSelectedFiles((current) => current.filter((file) => file !== fileName));
   };
 
   return (
-    <section className="chat-shell chat-template" aria-label="Chat interface preview">
-      <div className="chat-header">
+    <section className="assistant-chat" aria-label="SchemeSathi chat">
+      <header className="assistant-topbar">
         <div>
-          <p className="eyebrow">SchemeSathi Chatbot</p>
-          <h2 className="chat-title">Welfare schemes, directly through conversation</h2>
+          <p className="assistant-brand">SchemeSathi</p>
+          <p className="assistant-subtitle">Government scheme assistant</p>
         </div>
-        <div className="pill-row">
-          <span className="pill">Profile: {isProfileComplete(session) ? 'Ready' : 'Pending'}</span>
-          <span className="pill">Auth: {status === 'authenticated' ? 'Signed in' : 'Guest'}</span>
-          <span className="pill">Voice: {voiceEnabled ? 'On' : 'Off'}</span>
-          <span className="pill">Lang: {language}</span>
+        <div className="assistant-status-row" aria-label="Session status">
+          <span className="assistant-status">{isProfileComplete(session) ? 'Profile ready' : 'Profile pending'}</span>
+          <span className="assistant-status">{status === 'authenticated' ? 'Signed in' : 'Guest'}</span>
         </div>
-      </div>
+      </header>
 
       <div className="message-stack" aria-live="polite">
-        {messages.map((message, index) => (
-          <article key={`${message.role}-${index}`} className={`message-card ${message.role}`}>
-            {message.meta ? <p className="message-meta">{message.meta}</p> : null}
-            <p>{message.text}</p>
-          </article>
-        ))}
+        {messages.length === 0 ? (
+          <div className="chat-empty-state">
+            <p className="empty-brand">SchemeSathi</p>
+            <h1>Your government scheme assistant</h1>
+            <p className="empty-copy">Ask about eligibility, documents, applications, or compare schemes in one conversation.</p>
+            <div className="suggested-prompts" aria-label="Suggested prompts">
+              {suggestedPrompts.map((prompt) => (
+                <button key={prompt} type="button" className="suggested-prompt" onClick={() => void sendMessage(prompt)}>
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((message, index) => (
+            <article key={`${message.role}-${index}`} className={`message-card ${message.role}`}>
+              {message.meta ? <p className="message-meta">{message.meta}</p> : null}
+              <p>{message.text}</p>
+            </article>
+          ))
+        )}
       </div>
 
-      {selectedFiles.length ? (
-        <div className="upload-chip-wrap">
-          {selectedFiles.map((file) => (
-            <span key={file} className="pill">
-              {file}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <footer className="composer-dock">
+        {selectedFiles.length ? (
+          <div className="upload-chip-wrap" aria-label="Attached files">
+            {selectedFiles.map((file) => (
+              <span key={file} className="attachment-chip">
+                {file}
+                <button type="button" aria-label={`Remove ${file}`} onClick={() => removeFile(file)}>
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
 
-      <div className="composer">
-        <input
-          className="text-field composer-input"
-          placeholder="Type your message..."
-          aria-label="Chat message input"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              void sendMessage();
-            }
-          }}
-        />
+        {errorMessage ? <p className="composer-note status-error">{errorMessage}</p> : null}
+        {retryMessage ? (
+          <button type="button" className="retry-button" onClick={() => void sendMessage(retryMessage, true)} disabled={isSending}>
+            Retry last message
+          </button>
+        ) : null}
 
-        <div className="composer-actions">
-          <label className="pill upload-button">
-            Upload PDF or Image
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.docx,.jpg,.jpeg,.png"
-              onChange={handleFileUpload}
-              style={{ display: 'none' }}
-            />
+        <div className="composer">
+          <label className="composer-icon-button upload-button" title="Attach document" aria-label="Attach document">
+            <Paperclip size={20} aria-hidden="true" />
+            <input type="file" multiple accept=".pdf,.docx,.jpg,.jpeg,.png" onChange={handleFileUpload} />
           </label>
 
-          <select className="pill select-pill" value={language} onChange={(event) => setLanguage(event.target.value)}>
-            <option value="English">English</option>
-            <option value="Hindi">Hindi</option>
-            <option value="Tamil">Tamil</option>
-            <option value="Telugu">Telugu</option>
-            <option value="Marathi">Marathi</option>
+          <input
+            className="composer-input"
+            placeholder="Ask about schemes, eligibility, or documents..."
+            aria-label="Chat message input"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                void sendMessage();
+              }
+            }}
+          />
+
+          <select className="language-select" aria-label="Response language" value={language} onChange={(event) => setLanguage(event.target.value)}>
+            <option value="English">EN</option>
+            <option value="Hindi">HI</option>
+            <option value="Tamil">TA</option>
+            <option value="Telugu">TE</option>
+            <option value="Marathi">MR</option>
           </select>
 
-          <button type="button" className="pill toggle-pill" onClick={() => setVoiceEnabled((current) => !current)}>
-            {voiceEnabled ? 'Voice On' : 'Voice Off'}
+          <button
+            type="button"
+            className={`composer-icon-button ${voiceEnabled ? 'active' : ''}`}
+            title="Voice input"
+            aria-label="Voice input"
+            onClick={() => setVoiceEnabled((current) => !current)}
+          >
+            <Mic size={20} aria-hidden="true" />
+          </button>
+
+          <button type="button" className="composer-send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={isSending}>
+            <SendHorizontal size={20} aria-hidden="true" />
           </button>
         </div>
-
-        <button type="button" className="primary-button send-button" onClick={() => void sendMessage()} disabled={isSending}>
-          {isSending ? 'Sending...' : 'Send'}
-        </button>
-      </div>
-
-      {errorMessage ? <p className="helper-text">{errorMessage}</p> : null}
-      {retryMessage ? (
-        <div className="action-row">
-          <button type="button" className="btn" onClick={() => void sendMessage(retryMessage, true)} disabled={isSending}>
-            Retry
-          </button>
-        </div>
-      ) : null}
-
-      <p className="helper-text">
-        <Link href="/auth">Login</Link> first, then complete your profile for better eligibility results.
-      </p>
+      </footer>
     </section>
   );
 }

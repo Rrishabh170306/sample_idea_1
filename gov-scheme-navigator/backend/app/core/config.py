@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlparse
+
+from dotenv import load_dotenv
+
+
+logger = logging.getLogger(__name__)
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(BACKEND_ROOT / ".env")
+logger.info(
+    "CHAT_USE_ORCHESTRATOR env raw=%r resolved=%s",
+    os.getenv("CHAT_USE_ORCHESTRATOR"),
+    os.getenv("CHAT_USE_ORCHESTRATOR", "false").strip().lower() in {"1", "true", "yes", "on"},
+)
 
 
 def _parse_redis_url(value: str) -> tuple[str, int, int]:
@@ -52,6 +68,12 @@ class Settings:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-pro"))
     profile_store_path: str = field(
         default_factory=lambda: os.getenv("PROFILE_STORE_PATH", "data/profiles.json")
+    )
+    chat_use_orchestrator: bool = field(
+        default_factory=lambda: os.getenv("CHAT_USE_ORCHESTRATOR", "false").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    backend_auth_secret: str = field(
+        default_factory=lambda: os.getenv("AUTH_BACKEND_SHARED_SECRET") or os.getenv("AUTH_SECRET", "")
     )
     # If >0 the scraper runner will repeat every N seconds; 0 (default) runs once
     scrape_interval_seconds: int = field(default_factory=lambda: int(os.getenv("SCRAPE_INTERVAL_SECONDS", "0") or 0))

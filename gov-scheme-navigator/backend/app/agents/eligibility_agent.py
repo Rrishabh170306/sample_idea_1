@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.agents.state import AgentState
 from app.eligibility.engine import EligibilityEngine
-from app.eligibility.rules import get_rule_set
+from app.eligibility.rules import get_all_rule_sets, get_rule_set
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,29 +23,25 @@ class EligibilityAgent:
             if scheme_id:
                 rules = get_rule_set(scheme_id)
                 if rules:
-                    res = self.engine.evaluate(profile, {"rules": rules} if not isinstance(rules, dict) or "rules" not in rules else rules)
-                    results[scheme_id] = {
-                        "eligible": res.eligible,
-                        "score": res.score,
-                        "gaps": res.gaps,
-                        "explanation": res.explanation,
-                    }
+                    results[scheme_id] = self._evaluate_rules(profile, rules)
                 else:
                     logger.info("No rules found for scheme %s", scheme_id)
             else:
-                # In absence of explicit scheme_id, fall back to a lightweight local check
-                mock_scheme_rules = {
-                    "scheme_id": "MOCK-001",
-                    "rules": {"and": [{">=": [{"var": "age"}, 18]}]}
-                }
-                res = self.engine.evaluate(profile, mock_scheme_rules)
-                results[mock_scheme_rules["scheme_id"]] = {
-                    "eligible": res.eligible,
-                    "score": res.score,
-                    "gaps": res.gaps,
-                    "explanation": res.explanation,
-                }
+                for registered_scheme_id, rules in get_all_rule_sets().items():
+                    results[registered_scheme_id] = self._evaluate_rules(profile, rules)
         except Exception as exc:
             logger.exception("Eligibility evaluation failed: %s", exc)
 
         return {"eligibility_results": results}
+
+    def _evaluate_rules(self, profile: dict, rules: dict) -> dict:
+        res = self.engine.evaluate(
+            profile,
+            {"rules": rules} if not isinstance(rules, dict) or "rules" not in rules else rules,
+        )
+        return {
+            "eligible": res.eligible,
+            "score": res.score,
+            "gaps": res.gaps,
+            "explanation": res.explanation,
+        }

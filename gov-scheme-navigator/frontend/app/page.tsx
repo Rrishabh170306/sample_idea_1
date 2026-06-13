@@ -15,10 +15,11 @@ export default function HomePage() {
           </p>
 
           <div className="cta-row landing-cta">
-            <Link href="/auth" className="primary-button primary-link" aria-label="Continue with Google">
-              Continue with Google
+            <Link href="/auth" className="primary-button primary-link" aria-label="Get Started Today">
+              Get Started Today!
             </Link>
           </div>
+          <p className="landing-cta-helper">Secure sign-in with Google</p>
 
           <section className="trust-section" aria-label="Privacy and trust">
             <p className="trust-title">Privacy first</p>

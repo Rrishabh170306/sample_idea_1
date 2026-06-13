@@ -23,20 +23,19 @@ export function AuthPanel() {
   };
 
   return (
-    <section className="auth-panel">
-      <p className="eyebrow">Google login</p>
-      <h1 className="page-title">Continue with Google</h1>
-      <p className="page-copy">
-        Sign in with your Google account to continue to profile onboarding.
-      </p>
+    <section className="auth-panel auth-card">
+      <p className="assistant-brand auth-brand">SchemeSathi</p>
+      <h1 className="auth-title">Find government schemes through conversation.</h1>
+      <p className="auth-copy">Secure Google sign-in. Your profile helps the assistant reason about eligibility and stays private.</p>
 
-      <div className="action-row">
-        <button type="button" className="primary-button" onClick={handleLogin} disabled={isLoading}>
-          {isLoading ? 'Signing in…' : 'Continue with Google'}
+      <div className="auth-action">
+        <button type="button" className="google-button" onClick={handleLogin} disabled={isLoading}>
+          <span aria-hidden="true">G</span>
+          {isLoading ? 'Signing in...' : 'Get Started Today!'}
         </button>
       </div>
 
-      <p className="helper-text">After successful login, you will be redirected to profile onboarding.</p>
+      <p className="auth-trust">Secure sign-in with Google</p>
     </section>
   );
 }

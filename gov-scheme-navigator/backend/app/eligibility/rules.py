@@ -21,3 +21,7 @@ DEFAULT_RULESETS: dict[str, dict[str, Any]] = {PM_KISAN_RULESET["scheme_id"]: PM
 
 def get_rule_set(scheme_id: str) -> dict[str, Any] | None:
     return DEFAULT_RULESETS.get(scheme_id)
+
+
+def get_all_rule_sets() -> dict[str, dict[str, Any]]:
+    return dict(DEFAULT_RULESETS)

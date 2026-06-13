@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+
+from app.core.auth import AuthenticatedIdentity, get_authenticated_identity
+from app.services.chat_service import ChatService
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+chat_service = ChatService()
 
 
 class ChatMessage(BaseModel):
@@ -19,12 +23,19 @@ class ChatReply(BaseModel):
 
 
 @router.post("/messages")
-async def create_message(payload: ChatMessage, x_user_email: str | None = Header(default=None)) -> ChatReply:
-    user_email = x_user_email.strip().lower() if x_user_email else None
-    return ChatReply(
-        reply=f"Received: {payload.message}",
+async def create_message(
+    payload: ChatMessage,
+    identity: AuthenticatedIdentity = Depends(get_authenticated_identity),
+) -> ChatReply:
+    result = await chat_service.create_reply(
+        message=payload.message,
         session_id=payload.session_id,
-        user_email=user_email,
+        user_email=identity.email,
+    )
+    return ChatReply(
+        reply=result.reply,
+        session_id=result.session_id,
+        user_email=result.user_email,
     )
 
 
